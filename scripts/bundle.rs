@@ -23,6 +23,7 @@ fn prepare_dist_directory() {
 
 fn bundle_assets() {
     fs_extra::dir::copy("fonts", DIST_DIR, &fs_extra::dir::CopyOptions::new()).expect("copy fonts");
+    fs_extra::dir::copy("data", DIST_DIR, &fs_extra::dir::CopyOptions::new()).expect("copy data");
 }
 
 fn bundle_index_html() {

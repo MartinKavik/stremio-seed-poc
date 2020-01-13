@@ -39,6 +39,15 @@ pub fn view<Ms: 'static>() -> impl View<Ms> {
                 At::Href => Route::Addons(None).to_href()
             },
             "Go to Addons ▶"
-        ]
+        ],
+        a![
+            style! {
+                St::Padding => px(20),
+            },
+            attrs! {
+                At::Href => Route::Search.to_href()
+            },
+            "Go to Search ▶"
+        ],
     ]
 }

@@ -15,6 +15,7 @@ pub enum Route {
     },
     Player,
     Addons(Option<ResourceRequest>),
+    Search,
     NotFound,
 }
 
@@ -35,6 +36,7 @@ impl Route {
             ),
             Self::Player => "#/player".into(),
             Self::Addons(req) => format!("#/addons{}", resource_request_to_url_path(req)),
+            Self::Search => "#/search".into(),
             Self::NotFound => "#/404".into(),
         }
     }
@@ -126,7 +128,8 @@ impl From<Url> for Route {
                 };
 
                 Self::Addons(Some(req))
-            }
+            },
+            Some("search") => Self::Search,
             _ => Self::NotFound,
         }
     }

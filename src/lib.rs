@@ -35,6 +35,7 @@ pub enum Model {
     Discover(page::discover::Model),
     Player(SharedModel),
     Addons(page::addons::Model),
+    Search(page::search::Model),
     NotFound(SharedModel),
 }
 
@@ -45,6 +46,7 @@ impl Model {
             Self::Discover(module_model) => Some(module_model.shared()),
             Self::Detail(module_model) => Some(module_model.shared()),
             Self::Addons(module_model) => Some(module_model.shared()),
+            Self::Search(module_model) => Some(module_model.shared()),
             Self::Player(shared) | Self::NotFound(shared) | Self::Board(shared) => Some(shared),
         }
     }
@@ -70,6 +72,7 @@ impl From<Model> for SharedModel {
             Model::Discover(module_model) => module_model.into(),
             Model::Detail(module_model) => module_model.into(),
             Model::Addons(module_model) => module_model.into(),
+            Model::Search(module_model) => module_model.into(),
             Model::Board(shared_model)
             | Model::Player(shared_model)
             | Model::NotFound(shared_model) => shared_model,
@@ -121,6 +124,7 @@ fn sink(g_msg: GMsg, model: &mut Model, orders: &mut impl Orders<Msg, GMsg>) {
         | Model::Board(_)
         | Model::Detail(_)
         | Model::Player(_)
+        | Model::Search(_)
         | Model::NotFound(_) => Some(g_msg),
     };
 
@@ -167,6 +171,7 @@ enum Msg {
     DiscoverMsg(page::discover::Msg),
     DetailMsg(page::detail::Msg),
     AddonsMsg(page::addons::Msg),
+    SearchMsg(page::search::Msg),
 }
 
 fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg, GMsg>) {
@@ -191,6 +196,11 @@ fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg, GMsg>) {
         Msg::AddonsMsg(module_msg) => {
             if let Model::Addons(module_model) = model {
                 page::addons::update(module_msg, module_model, &mut orders.proxy(Msg::AddonsMsg));
+            }
+        }
+        Msg::SearchMsg(module_msg) => {
+            if let Model::Search(module_model) = model {
+                page::search::update(module_msg, module_model, &mut orders.proxy(Msg::SearchMsg));
             }
         }
     }
@@ -222,6 +232,7 @@ fn change_model_by_route(route: Route, model: &mut Model, orders: &mut impl Orde
             resource_request,
             &mut orders.proxy(Msg::AddonsMsg),
         )),
+        Route::Search => Model::Search(page::search::init(shared(model))),
         Route::NotFound => Model::NotFound(shared(model)),
     };
 }
@@ -243,6 +254,7 @@ fn view(model: &Model) -> impl View<Msg> {
                 Model::Detail(_) => page::detail::view().els(),
                 Model::Player(_) => page::player::view().els(),
                 Model::Addons(model) => page::addons::view(model).els().map_msg(Msg::AddonsMsg),
+                Model::Search(model) => page::search::view(model).els().map_msg(Msg::SearchMsg),
                 Model::NotFound(_) => page::not_found::view().els(),
             }
         ]
