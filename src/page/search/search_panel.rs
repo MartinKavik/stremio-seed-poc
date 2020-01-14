@@ -1,4 +1,7 @@
-use seed::{prelude::*, *};
+use seed::{prelude::*, *, fetch};
+use std:: str::FromStr;
+use serde::Deserialize;
+use web_sys::Performance;
 
 // ------ ------
 //     Model
@@ -9,26 +12,32 @@ pub struct Model {
     download_url: &'static str,
     downloaded_records: Vec<Record>,
     indexed_records: Vec<IndexedRecord>,
-    download_time: Option<u32>,
-    index_time: Option<u32>,
+    download_start: f64,
+    download_time: Option<f64>,
+    index_time: Option<f64>,
     query: String,
-    search_time: Option<u32>,
-    max_results: u32,
+    search_time: Option<f64>,
+    max_results: usize,
     results: Vec<ResultItem>,
+    performance: Performance,
 }
 
-struct Record {
+#[derive(Clone, Debug, Deserialize)]
+pub struct Record {
     id: String,
     name: String,
     poster: String,
+    #[serde(rename(deserialize = "type"))]
     type_: String,
 }
 
-struct IndexedRecord {
-
+pub struct IndexedRecord {
+    id: String,
+    name: String,
+    name_lowercase: String,
 }
 
-struct ResultItem {
+pub struct ResultItem {
     id: String,
     name: String,
 }
@@ -46,12 +55,14 @@ pub fn init(
         download_url,
         downloaded_records: Vec::new(),
         indexed_records: Vec::new(),
+        download_start: 0.,
         download_time: None,
         index_time: None,
         query: "".to_owned(),
         search_time: None,
         max_results: 5,
         results: Vec::new(),
+        performance: window().performance().expect("get `Performance`"),
     }
 }
 
@@ -60,10 +71,86 @@ pub fn init(
 // ------ ------
 
 #[derive(Clone)]
-pub struct Msg;
+pub enum Msg {
+    Download,
+    Downloaded(fetch::ResponseDataResult<Vec<Record>>),
+    Index,
+    MaxResultsChanged(String),
+    QueryChanged(String),
+    Search,
+}
 
-pub fn update<GMs>(_: Msg, _: &mut Model, _: &mut impl Orders<Msg, GMs>) {
-    //
+async fn fetch_records(url: &'static str) -> Result<Msg, Msg> {
+    fetch::Request::new(url)
+        .fetch_json_data(Msg::Downloaded)
+        .await
+}
+
+fn index(downloaded_records: &[Record]) -> Vec<IndexedRecord> {
+    downloaded_records
+    .iter().map(|record| {
+        IndexedRecord {
+            id: record.id.clone(),
+            name: record.name.clone(),
+            name_lowercase: record.name.to_lowercase(),
+        }
+    }).collect()
+}
+
+fn search(query: &str, indexed_records: &[IndexedRecord], max_results: usize) -> Vec<ResultItem> {
+    let query = query.to_lowercase();
+    indexed_records
+        .iter()
+        .filter_map(|record| {
+            if record.name_lowercase.contains(&query) {
+                Some(ResultItem {
+                    id: record.id.clone(),
+                    name: record.name.clone(),
+                })
+            } else {
+                None
+            }
+        })
+        .take(max_results)
+        .collect()
+}
+
+pub fn update<GMs>(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg, GMs>) {
+    match msg {
+        Msg::Download => {
+            model.download_start = model.performance.now();
+            model.download_time = None;
+            orders.perform_cmd(fetch_records(model.download_url));
+        },
+        Msg::Downloaded(Ok(records)) => {
+            model.downloaded_records = records;
+            model.download_time = Some(model.performance.now() - model.download_start);
+        },
+        Msg::Downloaded(Err(err)) => {
+            log!("Download error", err);
+        },
+        Msg::Index => {
+            let index_start = model.performance.now();
+            model.indexed_records = index(&model.downloaded_records);
+            model.index_time = Some(model.performance.now() - index_start);
+            orders.send_msg(Msg::Search);
+        },
+        Msg::MaxResultsChanged(max_results) => {
+            if let Ok(max_results) = usize::from_str(&max_results) {
+                model.max_results = max_results;
+                orders.send_msg(Msg::Search);
+            }
+        },
+        Msg::QueryChanged(query) => {
+            model.query = query;
+            orders.send_msg(Msg::Search);
+        },
+        Msg::Search => {
+            let search_start = model.performance.now();
+            model.results = search(&model.query, &model.indexed_records, model.max_results);
+            model.search_time = Some(model.performance.now() - search_start);
+        }
+    }
 }
 
 // ------ ------
@@ -73,190 +160,158 @@ pub fn update<GMs>(_: Msg, _: &mut Model, _: &mut impl Orders<Msg, GMs>) {
 pub fn view(model: &Model) -> Node<Msg> {
     div![
         style!{
-            St::Padding => px(10),
+            St::Padding => px(50) + " " + &px(10),
+            St::MinWidth => px(320),
         },
-        // label
         h2![
-            "Cinemeta",
+            model.title,
         ],
-        // download
+        view_download(model),
+        view_index(model),
+        view_max_results(model),
+        view_query(model),
+        view_results(model),
+    ]
+}
+
+pub fn view_download(model: &Model) -> Node<Msg> {
+    div![
+        style!{
+            St::Display => "flex",
+            St::AlignItems => "center",
+            St::Padding => "10px 0",
+        },
         div![
             style!{
-                St::Display => "flex",
-                St::AlignItems => "center",
-                St::Padding => "10px 0",
+                St::Cursor => "pointer",
+                St::Padding => "5px 15px",
+                St::BackgroundColor => "lightgreen",
+                St::BorderRadius => px(10),
             },
-            div![
-                style!{
-                    St::Cursor => "pointer",
-                    St::Padding => "5px 15px",
-                    St::BackgroundColor => "aquamarine",
-                    St::BorderRadius => px(10),
-                },
-                "Download"
-            ],
-            div![
-                style!{
-                    St::Padding => "0 10px",
-                },
-                "150 ms"
-            ],
+            simple_ev(Ev::Click, Msg::Download),
+            "Download & Deserialize"
         ],
-        // index
         div![
             style!{
-                St::Display => "flex",
-                St::AlignItems => "center",
-                St::Padding => "10px 0",
+                St::Padding => "0 10px",
             },
-            div![
-                style!{
-                    St::Cursor => "pointer",
-                    St::Padding => "5px 15px",
-                    St::BackgroundColor => "lightblue",
-                    St::BorderRadius => px(10),
-                },
-                "Index"
-            ],
-            div![
-                style!{
-                    St::Padding => "0 10px",
-                },
-                "25 ms"
-            ],
+            format!("{} ms", model.download_time.as_ref().map_or("-".to_owned(), ToString::to_string)),
         ],
-        // max results
+    ]
+}
+
+pub fn view_index(model: &Model) -> Node<Msg> {
+    div![
+        style!{
+            St::Display => "flex",
+            St::AlignItems => "center",
+            St::Padding => "10px 0",
+        },
         div![
             style!{
-                St::Display => "flex",
-                St::AlignItems => "center",
-                St::Padding => "10px 0",
+                St::Cursor => "pointer",
+                St::Padding => "5px 15px",
+                St::BackgroundColor => "lightblue",
+                St::BorderRadius => px(10),
             },
-            div![
-                "Max results:"
-            ],
-            input![
-                style!{
-                    St::Padding => "3px 8px",
-                    St::Margin => "0 10px",
-                    St::Border => "2px solid black",
-                },
-                attrs!{
-                    At::Value => "4",
-                    At::Type => "number",
-                }
-            ],
+            simple_ev(Ev::Click, Msg::Index),
+            "Index"
         ],
-        // query
         div![
             style!{
-                St::Display => "flex",
-                St::AlignItems => "center",
-                St::Padding => "10px 0",
+                St::Padding => "0 10px",
             },
-            div![
-                "Query:"
-            ],
-            input![
-                style!{
-                    St::Padding => "3px 8px",
-                    St::Margin => "0 10px",
-                    St::Border => "2px solid black",
-                },
-                attrs!{
-                    At::Value => "Shazam",
-                }
-            ],
-            div![
-                style!{
-                    St::Cursor => "pointer",
-                    St::Padding => "5px 15px",
-                    St::BackgroundColor => "lightgreen",
-                    St::BorderRadius => px(10),
-                },
-                "Search"
-            ],
-            div![
-                style!{
-                    St::Padding => "0 10px",
-                },
-                "28 ms"
-            ],
+            format!("{} ms", model.index_time.as_ref().map_or("-".to_owned(), ToString::to_string)),
         ],
-        // results
-        table![
+    ]
+}
+
+pub fn view_max_results(model: &Model) -> Node<Msg> {
+    div![
+        style!{
+            St::Display => "flex",
+            St::AlignItems => "center",
+            St::Padding => "10px 0",
+        },
+        div![
+            "Max results:"
+        ],
+        input![
             style!{
-                St::Padding => "10px 0",
+                St::Padding => "3px 8px",
+                St::Margin => "0 10px",
+                St::Border => "2px solid black",
             },
-            thead![
-                tr![
-                    th!["Id"],
-                    th!["Name"],
-                ]
-            ],
-            tbody![
-                tr![
-                    style!{
-                        St::BackgroundColor => "aliceblue",
-                    },
-                    td![
-                        style!{
-                            St::Padding => px(10),
-                        },
-                        "tt0448115"
-                    ],
-                    td![
-                        style!{
-                            St::Padding => px(10),
-                        },
-                        "Shazam!"
-                    ],
-                ],
-                tr![
-                    td![
-                        style!{
-                            St::Padding => px(10),
-                        },
-                        "tt0448115"
-                    ],
-                    td![
-                        style!{
-                            St::Padding => px(10),
-                        },
-                        "Shazam!"
-                    ],
-                ],
-                tr![
-                    style!{
-                        St::BackgroundColor => "aliceblue",
-                    },
-                    td![
-                        style!{
-                            St::Padding => px(10),
-                        },
-                        "tt0448115"],
-                    td![
-                        style!{
-                            St::Padding => px(10),
-                        },
-                        "Shazam!"
-                    ],
-                ],
-                tr![
-                    td![
-                        style!{
-                            St::Padding => px(10),
-                        },
-                        "tt2386490"
-                    ],
-                    td![
-                        style!{
-                            St::Padding => px(10),
-                        },
-                        "How to Train Your Dragon: The Hidden World!"
-                    ],
-                ],
+            attrs!{
+                At::Value => model.max_results,
+                At::Type => "number",
+            },
+            input_ev(Ev::Input, Msg::MaxResultsChanged),
+        ],
+    ]
+}
+
+pub fn view_query(model: &Model) -> Node<Msg> {
+    div![
+        style!{
+            St::Display => "flex",
+            St::AlignItems => "center",
+            St::Padding => "10px 0",
+        },
+        div![
+            "Query:"
+        ],
+        input![
+            style!{
+                St::Padding => "3px 8px",
+                St::Margin => "0 10px",
+                St::Border => "2px solid black",
+            },
+            attrs!{
+                At::Value => model.query,
+            },
+            input_ev(Ev::Input, Msg::QueryChanged),
+        ],
+        div![
+            format!("{} ms", model.search_time.as_ref().map_or("-".to_owned(), ToString::to_string)),
+        ],
+    ]
+}
+
+pub fn view_results(model: &Model) -> Node<Msg> {
+    table![
+        style!{
+            St::Padding => "10px 0",
+        },
+        thead![
+            tr![
+                th!["Id"],
+                th!["Name"],
             ]
+        ],
+        tbody![
+            model.results.iter().enumerate().map(view_result)
         ]
+    ]
+}
+
+pub fn view_result(result_item_data: (usize, &ResultItem)) -> Node<Msg> {
+    let (index, result_item) = result_item_data;
+    tr![
+        style!{
+            St::BackgroundColor => if index % 2 == 0 { Some("aliceblue") } else { None },
+        },
+        td![
+            style!{
+                St::Padding => px(10),
+            },
+            result_item.id,
+        ],
+        td![
+            style!{
+                St::Padding => px(10),
+            },
+            result_item.name,
+        ],
     ]
 }
