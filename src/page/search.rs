@@ -1,4 +1,5 @@
 pub mod search_panel;
+pub mod simple_search_panel;
 
 use seed::{prelude::*, *};
 use crate::SharedModel;
@@ -11,7 +12,7 @@ pub struct Model {
     shared: SharedModel,
     cinemeta_lite: search_panel::Model,
     cinemeta: search_panel::Model,
-    cinemeta_simple: search_panel::Model,
+    cinemeta_simple: simple_search_panel::Model,
 }
 
 impl Model {
@@ -37,7 +38,7 @@ pub fn init(
         shared,
         cinemeta_lite: search_panel::init("Cinemeta-lite", "/data/cinemeta-lite.json"),
         cinemeta: search_panel::init("Cinemeta", "/data/cinemeta.json"),
-        cinemeta_simple: search_panel::init("Cinemeta (simple search)", "/data/cinemeta.json"),
+        cinemeta_simple: simple_search_panel::init("Cinemeta (simple search)", "/data/cinemeta.json"),
     }
 }
 
@@ -49,14 +50,14 @@ pub fn init(
 pub enum Msg {
     CinemetaLite(search_panel::Msg),
     Cinemeta(search_panel::Msg),
-    CinemetaSimple(search_panel::Msg),
+    CinemetaSimple(simple_search_panel::Msg),
 }
 
 pub fn update<GMs: 'static>(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg, GMs>) {
     match msg {
         Msg::CinemetaLite(msg) => search_panel::update(msg, &mut model.cinemeta_lite, &mut orders.proxy(Msg::CinemetaLite)),
         Msg::Cinemeta(msg) => search_panel::update(msg, &mut model.cinemeta, &mut orders.proxy(Msg::Cinemeta)),
-        Msg::CinemetaSimple(msg) => search_panel::update(msg, &mut model.cinemeta_simple, &mut orders.proxy(Msg::CinemetaSimple)),
+        Msg::CinemetaSimple(msg) => simple_search_panel::update(msg, &mut model.cinemeta_simple, &mut orders.proxy(Msg::CinemetaSimple)),
     }
 }
 
@@ -75,7 +76,7 @@ pub fn view(model: &Model) -> impl View<Msg> {
         },
         search_panel::view(&model.cinemeta_lite).map_msg(Msg::CinemetaLite),
         search_panel::view(&model.cinemeta).map_msg(Msg::Cinemeta),
-        search_panel::view(&model.cinemeta_simple).map_msg(Msg::CinemetaSimple),
+        simple_search_panel::view(&model.cinemeta_simple).map_msg(Msg::CinemetaSimple),
     ]
 }
 
