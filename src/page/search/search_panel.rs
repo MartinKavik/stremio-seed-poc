@@ -1,17 +1,21 @@
 use seed::{prelude::*, *, fetch};
-use std:: str::FromStr;
+use std::{str::FromStr, collections::HashMap};
 use serde::Deserialize;
 use web_sys::Performance;
+use simsearch::SimSearch;
 
 // ------ ------
 //     Model
 // ------ ------
 
+type Id = String;
+type Name = String;
+
 pub struct Model {
     title: &'static str,
     download_url: &'static str,
-    downloaded_records: Vec<Record>,
-    indexed_records: Vec<IndexedRecord>,
+    downloaded_records: HashMap<Id, Name>,
+    simsearch: SimSearch<Id>,
     download_start: f64,
     download_time: Option<f64>,
     index_time: Option<f64>,
@@ -24,22 +28,16 @@ pub struct Model {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Record {
-    id: String,
-    name: String,
+    id: Id,
+    name: Name,
     poster: String,
     #[serde(rename(deserialize = "type"))]
     type_: String,
 }
 
-pub struct IndexedRecord {
-    id: String,
-    name: String,
-    name_lowercase: String,
-}
-
 pub struct ResultItem {
-    id: String,
-    name: String,
+    id: Id,
+    name: Name,
 }
 
 // ------ ------
@@ -53,8 +51,8 @@ pub fn init(
     Model {
         title,
         download_url,
-        downloaded_records: Vec::new(),
-        indexed_records: Vec::new(),
+        downloaded_records: HashMap::new(),
+        simsearch: SimSearch::default(),
         download_start: 0.,
         download_time: None,
         index_time: None,
@@ -86,32 +84,20 @@ async fn fetch_records(url: &'static str) -> Result<Msg, Msg> {
         .await
 }
 
-fn index(downloaded_records: &[Record]) -> Vec<IndexedRecord> {
-    downloaded_records
-    .iter().map(|record| {
-        IndexedRecord {
-            id: record.id.clone(),
-            name: record.name.clone(),
-            name_lowercase: record.name.to_lowercase(),
-        }
-    }).collect()
+fn index(downloaded_records: &HashMap<Id, Name>) -> SimSearch<Id> {
+    let mut simsearch = SimSearch::new();
+    for (id, name) in downloaded_records {
+        simsearch.insert(id.clone(), name);
+    }
+    simsearch
 }
 
-fn search(query: &str, indexed_records: &[IndexedRecord], max_results: usize) -> Vec<ResultItem> {
-    let query = query.to_lowercase();
-    indexed_records
-        .iter()
-        .filter_map(|record| {
-            if record.name_lowercase.contains(&query) {
-                Some(ResultItem {
-                    id: record.id.clone(),
-                    name: record.name.clone(),
-                })
-            } else {
-                None
-            }
-        })
-        .take(max_results)
+fn search(query: &str, simsearch: &SimSearch<Id>, max_results: usize, downloaded_records: &HashMap<Id, Name>) -> Vec<ResultItem> {
+    simsearch
+        .search(query)
+        .into_iter()
+        .take(max_results) //@TODO
+        .map(|id| ResultItem { name: downloaded_records[&id].clone(), id })
         .collect()
 }
 
@@ -123,7 +109,11 @@ pub fn update<GMs>(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg, GM
             orders.perform_cmd(fetch_records(model.download_url));
         },
         Msg::Downloaded(Ok(records)) => {
-            model.downloaded_records = records;
+            model.downloaded_records =
+                records
+                    .into_iter()
+                    .map(|record| (record.id, record.name))
+                    .collect();
             model.download_time = Some(model.performance.now() - model.download_start);
         },
         Msg::Downloaded(Err(err)) => {
@@ -131,7 +121,7 @@ pub fn update<GMs>(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg, GM
         },
         Msg::Index => {
             let index_start = model.performance.now();
-            model.indexed_records = index(&model.downloaded_records);
+            model.simsearch = index(&model.downloaded_records);
             model.index_time = Some(model.performance.now() - index_start);
             orders.send_msg(Msg::Search);
         },
@@ -147,7 +137,7 @@ pub fn update<GMs>(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg, GM
         },
         Msg::Search => {
             let search_start = model.performance.now();
-            model.results = search(&model.query, &model.indexed_records, model.max_results);
+            model.results = search(&model.query, &model.simsearch, model.max_results, &model.downloaded_records);
             model.search_time = Some(model.performance.now() - search_start);
         }
     }

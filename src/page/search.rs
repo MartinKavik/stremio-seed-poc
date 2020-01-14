@@ -38,7 +38,7 @@ pub fn init(
         shared,
         cinemeta_lite: search_panel::init("Cinemeta-lite", "/data/cinemeta-lite.json"),
         cinemeta: search_panel::init("Cinemeta", "/data/cinemeta.json"),
-        cinemeta_simple: simple_search_panel::init("Cinemeta (simple search)", "/data/cinemeta.json"),
+        cinemeta_simple: simple_search_panel::init("Cinemeta (simple search with .contains(..))", "/data/cinemeta.json"),
     }
 }
 
