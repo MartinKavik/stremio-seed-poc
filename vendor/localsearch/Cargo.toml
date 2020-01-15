@@ -1,0 +1,9 @@
+[package]
+name = "localsearch"
+version = "0.1.0"
+authors = ["Martin Kavík <martin@kavik.cz>"]
+edition = "2018"
+
+[dependencies]
+radix_trie = "0.1.6"
+generic_levenshtein = "0.2.0"

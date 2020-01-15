@@ -2,6 +2,7 @@ use seed::{prelude::*, *, fetch};
 use std:: str::FromStr;
 use serde::Deserialize;
 use web_sys::Performance;
+use localsearch::{self, LocalSearch};
 
 // ------ ------
 //     Model
@@ -11,14 +12,14 @@ pub struct Model {
     title: &'static str,
     download_url: &'static str,
     downloaded_records: Vec<Record>,
-    indexed_records: Vec<IndexedRecord>,
+    local_search: LocalSearch,
     download_start: f64,
     download_time: Option<f64>,
     index_time: Option<f64>,
     query: String,
     search_time: Option<f64>,
     max_results: usize,
-    results: Vec<ResultItem>,
+    results: Vec<localsearch::ResultItem>,
     performance: Performance,
 }
 
@@ -29,18 +30,6 @@ pub struct Record {
     poster: String,
     #[serde(rename(deserialize = "type"))]
     type_: String,
-}
-
-pub struct IndexedRecord {
-    id: String,
-    name: String,
-    name_lowercase: String,
-}
-
-pub struct ResultItem {
-    id: String,
-    name: String,
-    score: f64,
 }
 
 // ------ ------
@@ -55,7 +44,7 @@ pub fn init(
         title,
         download_url,
         downloaded_records: Vec::new(),
-        indexed_records: Vec::new(),
+        local_search: LocalSearch::new(),
         download_start: 0.,
         download_time: None,
         index_time: None,
@@ -87,34 +76,21 @@ async fn fetch_records(url: &'static str) -> Result<Msg, Msg> {
         .await
 }
 
-fn index(downloaded_records: &[Record]) -> Vec<IndexedRecord> {
-    downloaded_records
-    .iter().map(|record| {
-        IndexedRecord {
-            id: record.id.clone(),
-            name: record.name.clone(),
-            name_lowercase: record.name.to_lowercase(),
-        }
-    }).collect()
+fn index(downloaded_records: &[Record]) -> LocalSearch {
+    let documents =
+        downloaded_records
+            .iter()
+            .map(|record| {
+                localsearch::Document {
+                    id: record.id.clone(),
+                    text: record.name.clone(),
+                }
+            });
+    LocalSearch::with_documents(documents)
 }
 
-fn search(query: &str, indexed_records: &[IndexedRecord], max_results: usize) -> Vec<ResultItem> {
-    let query = query.to_lowercase();
-    indexed_records
-        .iter()
-        .filter_map(|record| {
-            if record.name_lowercase.contains(&query) {
-                Some(ResultItem {
-                    id: record.id.clone(),
-                    name: record.name.clone(),
-                    score: 1.,
-                })
-            } else {
-                None
-            }
-        })
-        .take(max_results)
-        .collect()
+fn search(query: &str, local_search: &LocalSearch, max_results: usize) -> Vec<localsearch::ResultItem> {
+    local_search.search(query, max_results)
 }
 
 pub fn update<GMs>(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg, GMs>) {
@@ -133,7 +109,7 @@ pub fn update<GMs>(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg, GM
         },
         Msg::Index => {
             let index_start = model.performance.now();
-            model.indexed_records = index(&model.downloaded_records);
+            model.local_search = index(&model.downloaded_records);
             model.index_time = Some(model.performance.now() - index_start);
             orders.send_msg(Msg::Search);
         },
@@ -149,7 +125,7 @@ pub fn update<GMs>(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg, GM
         },
         Msg::Search => {
             let search_start = model.performance.now();
-            model.results = search(&model.query, &model.indexed_records, model.max_results);
+            model.results = search(&model.query, &model.local_search, model.max_results);
             model.search_time = Some(model.performance.now() - search_start);
         }
     }
@@ -298,7 +274,7 @@ pub fn view_results(model: &Model) -> Node<Msg> {
     ]
 }
 
-pub fn view_result(result_item_data: (usize, &ResultItem)) -> Node<Msg> {
+pub fn view_result(result_item_data: (usize, &localsearch::ResultItem)) -> Node<Msg> {
     let (index, result_item) = result_item_data;
     tr![
         style!{
@@ -314,7 +290,7 @@ pub fn view_result(result_item_data: (usize, &ResultItem)) -> Node<Msg> {
             style!{
                 St::Padding => px(10),
             },
-            result_item.name,
+            result_item.text,
         ],
         td![
             style!{

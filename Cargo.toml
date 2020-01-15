@@ -21,6 +21,7 @@ js-sys = "0.3"
 enclose = "1.1.8"
 itertools = "0.8.1"
 simsearch = { path = "vendor/simsearch-rs" }
+localsearch = { path = "vendor/localsearch" }
 
 seed = "0.5.1"
 #seed = { git = "ssh://git@github.com/MartinKavik/seed.git" }

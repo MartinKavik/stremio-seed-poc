@@ -49,9 +49,9 @@ pub fn init(
         cinemeta_simple: simple_search_panel::init("Cinemeta (simple search with .contains(..))", "/data/cinemeta.json"),
         cinemeta_lite_minisearch: minisearch_search_panel::init("Cinemeta-lite (minisearch js)", "/data/cinemeta-lite.json"),
         cinemeta_minisearch: minisearch_search_panel::init("Cinemeta (minisearch js)", "/data/cinemeta.json"),
-        cinemeta_lite_localsearch: localsearch_search_panel::init("Cinemeta-lite (localsearch)", "/data/cinemeta-lite.json"),
-        cinemeta_localsearch: localsearch_search_panel::init("Cinemeta (localsearch)", "/data/cinemeta.json"),
-        cinemeta_preindexed_localsearch: preindexed_localsearch_search_panel::init("Cinemeta (preindexed localsearch)", "/data/cinemeta.json"),
+        cinemeta_lite_localsearch: localsearch_search_panel::init("Cinemeta-lite (localsearch) WIP", "/data/cinemeta-lite.json"),
+        cinemeta_localsearch: localsearch_search_panel::init("Cinemeta (localsearch) WIP", "/data/cinemeta.json"),
+        cinemeta_preindexed_localsearch: preindexed_localsearch_search_panel::init("Cinemeta (preindexed localsearch) WIP", "/data/cinemeta.json"),
     }
 }
 
