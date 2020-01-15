@@ -14,7 +14,6 @@ pub struct Model {
     indexed_records: Vec<IndexedRecord>,
     download_start: f64,
     download_time: Option<f64>,
-    index_time: Option<f64>,
     query: String,
     search_time: Option<f64>,
     max_results: usize,
@@ -58,7 +57,6 @@ pub fn init(
         indexed_records: Vec::new(),
         download_start: 0.,
         download_time: None,
-        index_time: None,
         query: "".to_owned(),
         search_time: None,
         max_results: 5,
@@ -75,7 +73,6 @@ pub fn init(
 pub enum Msg {
     Download,
     Downloaded(fetch::ResponseDataResult<Vec<Record>>),
-    Index,
     MaxResultsChanged(String),
     QueryChanged(String),
     Search,
@@ -85,17 +82,6 @@ async fn fetch_records(url: &'static str) -> Result<Msg, Msg> {
     fetch::Request::new(url)
         .fetch_json_data(Msg::Downloaded)
         .await
-}
-
-fn index(downloaded_records: &[Record]) -> Vec<IndexedRecord> {
-    downloaded_records
-    .iter().map(|record| {
-        IndexedRecord {
-            id: record.id.clone(),
-            name: record.name.clone(),
-            name_lowercase: record.name.to_lowercase(),
-        }
-    }).collect()
 }
 
 fn search(query: &str, indexed_records: &[IndexedRecord], max_results: usize) -> Vec<ResultItem> {
@@ -131,12 +117,6 @@ pub fn update<GMs>(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg, GM
         Msg::Downloaded(Err(err)) => {
             log!("Download error", err);
         },
-        Msg::Index => {
-            let index_start = model.performance.now();
-            model.indexed_records = index(&model.downloaded_records);
-            model.index_time = Some(model.performance.now() - index_start);
-            orders.send_msg(Msg::Search);
-        },
         Msg::MaxResultsChanged(max_results) => {
             if let Ok(max_results) = usize::from_str(&max_results) {
                 model.max_results = max_results;
@@ -169,7 +149,6 @@ pub fn view(model: &Model) -> Node<Msg> {
             model.title,
         ],
         view_download(model),
-        view_index(model),
         view_max_results(model),
         view_query(model),
         view_results(model),
@@ -198,32 +177,6 @@ pub fn view_download(model: &Model) -> Node<Msg> {
                 St::Padding => "0 10px",
             },
             format!("{} ms", model.download_time.as_ref().map_or("-".to_owned(), ToString::to_string)),
-        ],
-    ]
-}
-
-pub fn view_index(model: &Model) -> Node<Msg> {
-    div![
-        style!{
-            St::Display => "flex",
-            St::AlignItems => "center",
-            St::Padding => "10px 0",
-        },
-        div![
-            style!{
-                St::Cursor => "pointer",
-                St::Padding => "5px 15px",
-                St::BackgroundColor => "lightblue",
-                St::BorderRadius => px(10),
-            },
-            simple_ev(Ev::Click, Msg::Index),
-            "Index"
-        ],
-        div![
-            style!{
-                St::Padding => "0 10px",
-            },
-            format!("{} ms", model.index_time.as_ref().map_or("-".to_owned(), ToString::to_string)),
         ],
     ]
 }

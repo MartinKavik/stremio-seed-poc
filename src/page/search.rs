@@ -2,6 +2,7 @@ pub mod simsearch_search_panel;
 pub mod simple_search_panel;
 pub mod minisearch_search_panel;
 pub mod localsearch_search_panel;
+pub mod preindexed_localsearch_search_panel;
 
 use seed::{prelude::*, *};
 use crate::SharedModel;
@@ -19,6 +20,7 @@ pub struct Model {
     cinemeta_minisearch: minisearch_search_panel::Model,
     cinemeta_lite_localsearch: localsearch_search_panel::Model,
     cinemeta_localsearch: localsearch_search_panel::Model,
+    cinemeta_preindexed_localsearch: preindexed_localsearch_search_panel::Model,
 }
 
 impl Model {
@@ -49,6 +51,7 @@ pub fn init(
         cinemeta_minisearch: minisearch_search_panel::init("Cinemeta (minisearch js)", "/data/cinemeta.json"),
         cinemeta_lite_localsearch: localsearch_search_panel::init("Cinemeta-lite (localsearch)", "/data/cinemeta-lite.json"),
         cinemeta_localsearch: localsearch_search_panel::init("Cinemeta (localsearch)", "/data/cinemeta.json"),
+        cinemeta_preindexed_localsearch: preindexed_localsearch_search_panel::init("Cinemeta (preindexed localsearch)", "/data/cinemeta.json"),
     }
 }
 
@@ -65,6 +68,7 @@ pub enum Msg {
     CinemetaLiteMinisearch(minisearch_search_panel::Msg),
     CinemetaLiteLocalsearch(localsearch_search_panel::Msg),
     CinemetaLocalsearch(localsearch_search_panel::Msg),
+    CinemetaPreindexedLocalsearch(preindexed_localsearch_search_panel::Msg),
 }
 
 pub fn update<GMs: 'static>(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg, GMs>) {
@@ -76,6 +80,7 @@ pub fn update<GMs: 'static>(msg: Msg, model: &mut Model, orders: &mut impl Order
         Msg::CinemetaMinisearch(msg) => minisearch_search_panel::update(msg, &mut model.cinemeta_minisearch, &mut orders.proxy(Msg::CinemetaMinisearch)),
         Msg::CinemetaLiteLocalsearch(msg) => localsearch_search_panel::update(msg, &mut model.cinemeta_lite_localsearch, &mut orders.proxy(Msg::CinemetaLiteLocalsearch)),
         Msg::CinemetaLocalsearch(msg) => localsearch_search_panel::update(msg, &mut model.cinemeta_localsearch, &mut orders.proxy(Msg::CinemetaLocalsearch)),
+        Msg::CinemetaPreindexedLocalsearch(msg) => preindexed_localsearch_search_panel::update(msg, &mut model.cinemeta_preindexed_localsearch, &mut orders.proxy(Msg::CinemetaPreindexedLocalsearch)),
     }
 }
 
@@ -99,6 +104,7 @@ pub fn view(model: &Model) -> impl View<Msg> {
         minisearch_search_panel::view(&model.cinemeta_minisearch).map_msg(Msg::CinemetaMinisearch),
         localsearch_search_panel::view(&model.cinemeta_lite_localsearch).map_msg(Msg::CinemetaLiteLocalsearch),
         localsearch_search_panel::view(&model.cinemeta_localsearch).map_msg(Msg::CinemetaLocalsearch),
+        preindexed_localsearch_search_panel::view(&model.cinemeta_preindexed_localsearch).map_msg(Msg::CinemetaPreindexedLocalsearch),
     ]
 }
 
