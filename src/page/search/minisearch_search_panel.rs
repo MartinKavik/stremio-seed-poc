@@ -1,7 +1,9 @@
 use seed::{prelude::*, *, fetch};
 use std:: str::FromStr;
-use serde::Deserialize;
 use web_sys::Performance;
+use serde::Deserialize;
+
+// https://github.com/lucaong/minisearch
 
 // ------ ------
 //     Model
@@ -10,8 +12,7 @@ use web_sys::Performance;
 pub struct Model {
     title: &'static str,
     download_url: &'static str,
-    downloaded_records: Vec<Record>,
-    indexed_records: Vec<IndexedRecord>,
+    downloaded_records: String,
     download_start: f64,
     download_time: Option<f64>,
     index_time: Option<f64>,
@@ -22,24 +23,13 @@ pub struct Model {
     performance: Performance,
 }
 
-#[derive(Clone, Debug, Deserialize)]
-pub struct Record {
-    id: String,
-    name: String,
-    poster: String,
-    #[serde(rename(deserialize = "type"))]
-    type_: String,
-}
-
-pub struct IndexedRecord {
-    id: String,
-    name: String,
-    name_lowercase: String,
-}
-
+#[derive(Deserialize)]
 pub struct ResultItem {
     id: String,
     name: String,
+    score: f64,
+    // terms
+    // match
 }
 
 // ------ ------
@@ -53,8 +43,7 @@ pub fn init(
     Model {
         title,
         download_url,
-        downloaded_records: Vec::new(),
-        indexed_records: Vec::new(),
+        downloaded_records: String::new(),
         download_start: 0.,
         download_time: None,
         index_time: None,
@@ -73,7 +62,7 @@ pub fn init(
 #[derive(Clone)]
 pub enum Msg {
     Download,
-    Downloaded(fetch::ResponseDataResult<Vec<Record>>),
+    Downloaded(fetch::ResponseDataResult<String>),
     Index,
     MaxResultsChanged(String),
     QueryChanged(String),
@@ -82,36 +71,29 @@ pub enum Msg {
 
 async fn fetch_records(url: &'static str) -> Result<Msg, Msg> {
     fetch::Request::new(url)
-        .fetch_json_data(Msg::Downloaded)
+        .fetch_string_data(Msg::Downloaded)
         .await
 }
 
-fn index(downloaded_records: &[Record]) -> Vec<IndexedRecord> {
-    downloaded_records
-    .iter().map(|record| {
-        IndexedRecord {
-            id: record.id.clone(),
-            name: record.name.clone(),
-            name_lowercase: record.name.to_lowercase(),
-        }
-    }).collect()
+#[wasm_bindgen]
+extern "C" {
+    fn index_multisearch(documents: &str);
 }
 
-fn search(query: &str, indexed_records: &[IndexedRecord], max_results: usize) -> Vec<ResultItem> {
-    let query = query.to_lowercase();
-    indexed_records
-        .iter()
-        .filter_map(|record| {
-            if record.name_lowercase.contains(&query) {
-                Some(ResultItem {
-                    id: record.id.clone(),
-                    name: record.name.clone(),
-                })
-            } else {
-                None
-            }
-        })
+fn index(downloaded_records: &str) {
+    index_multisearch(downloaded_records);
+}
+
+#[wasm_bindgen]
+extern "C" {
+    fn search_multisearch(query: &str) -> Box<[JsValue]>;
+}
+
+fn search(query: &str, max_results: usize) -> Vec<ResultItem> {
+    search_multisearch(query)
+        .into_iter()
         .take(max_results)
+        .map(|result| result.into_serde().expect("deserialize `ResultItem`"))
         .collect()
 }
 
@@ -131,7 +113,7 @@ pub fn update<GMs>(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg, GM
         },
         Msg::Index => {
             let index_start = model.performance.now();
-            model.indexed_records = index(&model.downloaded_records);
+            index(&model.downloaded_records);
             model.index_time = Some(model.performance.now() - index_start);
             orders.send_msg(Msg::Search);
         },
@@ -147,7 +129,7 @@ pub fn update<GMs>(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg, GM
         },
         Msg::Search => {
             let search_start = model.performance.now();
-            model.results = search(&model.query, &model.indexed_records, model.max_results);
+            model.results = search(&model.query, model.max_results);
             model.search_time = Some(model.performance.now() - search_start);
         }
     }
@@ -287,6 +269,7 @@ pub fn view_results(model: &Model) -> Node<Msg> {
             tr![
                 th!["Id"],
                 th!["Name"],
+                th!["Score"],
             ]
         ],
         tbody![
@@ -312,6 +295,12 @@ pub fn view_result(result_item_data: (usize, &ResultItem)) -> Node<Msg> {
                 St::Padding => px(10),
             },
             result_item.name,
+        ],
+        td![
+            style!{
+                St::Padding => px(10),
+            },
+            result_item.score.to_string(),
         ],
     ]
 }
