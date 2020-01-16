@@ -27,9 +27,9 @@ pub struct Model {
 pub struct Record {
     id: String,
     name: String,
-    poster: String,
-    #[serde(rename(deserialize = "type"))]
-    type_: String,
+//    poster: String,
+//    #[serde(rename(deserialize = "type"))]
+//    type_: String,
 }
 
 // ------ ------
@@ -81,6 +81,7 @@ fn index(downloaded_records: &[Record]) -> LocalSearch {
         downloaded_records
             .iter()
             .map(|record| {
+                // @TODO optimize
                 localsearch::Document {
                     id: record.id.clone(),
                     text: record.name.clone(),

@@ -6,4 +6,6 @@ edition = "2018"
 
 [dependencies]
 radix_trie = "0.1.6"
+radix_fmt = "1.0.0"
 generic_levenshtein = "0.2.0"
+unicode-segmentation = "1.6.0"
