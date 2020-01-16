@@ -1,4 +1,4 @@
-use std::{collections::HashMap, iter::FromIterator};
+use std::collections::HashMap;
 use radix_trie::Trie;
 use radix_fmt::radix_36;
 use unicode_segmentation::UnicodeSegmentation;
@@ -8,6 +8,7 @@ pub type Id = String;
 pub type Text = String;
 type RawToken = str;
 type Token = String;
+type Score = f64;
 
 #[derive(PartialEq, Eq, Hash, Clone)]
 // @TODO Rename to DocId?
@@ -25,8 +26,16 @@ pub struct Document {
 }
 
 struct IndexData {
-    num_of_docs_with_token: usize,
-    nums_of_token_occurrences_in_doc: HashMap<InternalId, usize>,
+    // @TODO rename to document_frequency?
+    num_of_texts_with_token: usize,
+    // @TODO rename to term_frequency or token_frequency?
+    nums_of_token_occurrences_in_text: HashMap<InternalId, usize>,
+}
+
+struct SearchQuery {
+    token: Token,
+    fuzzy: bool,
+    prefix: bool,
 }
 
 pub struct LocalSearch {
@@ -77,13 +86,32 @@ impl LocalSearch {
     }
 
     pub fn search(&self, query: &str, max_results: usize) -> Vec<ResultItem> {
-        vec![
-            ResultItem {
-                id: "dummy_id".into(),
-                text: "dummy_text".into(),
-                score: 1.,
-            }
-        ]
+        let results: Vec<HashMap<InternalId, Score>> =
+            tokenize_query(query)
+                .map(process_query_token)
+                .map(token_to_search_query)
+                .map(|search_query| self.execute_search_query(search_query))
+                .collect();
+
+        // @TODO combinators, optimize, refactor..
+        results.
+            into_iter()
+            .map(|hash_map: HashMap<InternalId, Score> | {
+                let mut vec: Vec<(InternalId, Score)> = hash_map.into_iter().collect();
+                vec.sort_by(|(_, score_a), (_, score_b)| score_a.partial_cmp(score_b).expect("compare scores"));
+                vec
+            })
+            .map(|vec| {
+                vec.into_iter().map(|(internal_id, score)| {
+                    ResultItem {
+                        score,
+                        id: self.document_ids.get(&internal_id).expect("get document id").clone(),
+                        text: self.document_texts.get(&internal_id).expect("get document id").clone(),
+                    }
+                })
+            })
+            .flatten()
+            .collect()
     }
 
     // @TODO short strings vs usize?
@@ -96,36 +124,78 @@ impl LocalSearch {
 
     fn add_token(&mut self, token: &Token, internal_id: &InternalId) {
         if let Some(index_data) = self.index.get_mut(token) {
-            if let Some(num_of_token_occurrences_in_doc) = index_data.nums_of_token_occurrences_in_doc.get_mut(internal_id) {
-                *num_of_token_occurrences_in_doc += 1;
+            if let Some(num_of_token_occurrences_in_text) = index_data.nums_of_token_occurrences_in_text.get_mut(internal_id) {
+                *num_of_token_occurrences_in_text += 1;
             } else {
-                index_data.num_of_docs_with_token += 1;
+                index_data.num_of_texts_with_token += 1;
             }
         } else {
             let index_data = IndexData {
-                num_of_docs_with_token: 1,
-                nums_of_token_occurrences_in_doc: {
+                num_of_texts_with_token: 1,
+                nums_of_token_occurrences_in_text: {
                     // @TODO with capacity and faster hasher or structure ?
-                    let mut nums_of_token_occurrences_in_doc = HashMap::new();
-                    nums_of_token_occurrences_in_doc.insert(internal_id.clone(), 1);
-                    nums_of_token_occurrences_in_doc
+                    let mut nums_of_token_occurrences_in_text = HashMap::new();
+                    nums_of_token_occurrences_in_text.insert(internal_id.clone(), 1);
+                    nums_of_token_occurrences_in_text
                 }
             };
             self.index.insert(token.clone(), index_data);
         }
     }
 
-    fn add_num_of_tokens_in_text(&mut self, num_of_tokens: usize, internal_id: &InternalId) {
+    fn execute_search_query(&self, search_query: SearchQuery) -> HashMap<InternalId, Score> {
+        let results = self.execute_exact_search(&search_query.token);
+        results
+    }
 
+    fn execute_exact_search(&self, token: &Token) -> HashMap<InternalId, Score> {
+        if let Some(index_data) = self.index.get(token) {
+            let mut results = HashMap::new();
+            let average_num_of_tokens_in_text = self.total_num_of_tokens_in_text as f64 / self.document_ids.len() as f64;
+
+            for (internal_id, num_of_token_occurrences) in &index_data.nums_of_token_occurrences_in_text {
+                let normalized_num_of_token_occurrences = *num_of_token_occurrences as f64 / average_num_of_tokens_in_text;
+                let score = self.score(index_data.num_of_texts_with_token, *num_of_token_occurrences, normalized_num_of_token_occurrences);
+                results.insert(internal_id.clone(), score);
+            }
+            results
+        } else {
+            HashMap::new() // @TODO with capacity and faster hasher or structure ?
+        }
+    }
+
+    fn score(&self, num_of_texts_with_token: usize, num_of_token_occurrences: usize, normalized_num_of_token_occurrences: f64) -> Score {
+        self.tf_idf(num_of_texts_with_token, num_of_token_occurrences) / normalized_num_of_token_occurrences
+    }
+
+    fn tf_idf(&self, tf: usize, df: usize) -> f64 {
+        let n = self.document_ids.len();
+        tf as f64 * f64::ln(n as f64 / df as f64)
     }
 }
 
-fn tokenize(text: &Text) -> impl Iterator<Item=&RawToken> {
+fn tokenize(text: &str) -> impl Iterator<Item=&RawToken> {
     text.unicode_words()
+}
+
+fn tokenize_query(query: &str) -> impl Iterator<Item=&RawToken> {
+    tokenize(query)
 }
 
 fn process_token(raw_token: &RawToken) -> Token {
     raw_token.to_lowercase()
+}
+
+fn process_query_token(raw_token: &RawToken) -> Token {
+    process_token(raw_token)
+}
+
+fn token_to_search_query(token: Token) -> SearchQuery {
+    SearchQuery {
+        token,
+        prefix: false, // @TODO not implemented
+        fuzzy: false, // @TODO not implemented
+    }
 }
 
 #[cfg(test)]

@@ -76,6 +76,7 @@ pub enum Msg {
     MaxResultsChanged(String),
     QueryChanged(String),
     Search,
+    CreateFileWithSerializedLocalSearch,
 }
 
 async fn fetch_records(url: &'static str) -> Result<Msg, Msg> {
@@ -131,7 +132,8 @@ pub fn update<GMs>(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg, GM
             let search_start = model.performance.now();
             model.results = search(&model.query, &model.indexed_records, model.max_results);
             model.search_time = Some(model.performance.now() - search_start);
-        }
+        },
+        Msg::CreateFileWithSerializedLocalSearch => { } // @TODO
     }
 }
 
@@ -148,10 +150,31 @@ pub fn view(model: &Model) -> Node<Msg> {
         h2![
             model.title,
         ],
+        view_create_file_with_serialized_localsearch(),
         view_download(model),
         view_max_results(model),
         view_query(model),
         view_results(model),
+    ]
+}
+
+pub fn view_create_file_with_serialized_localsearch() -> Node<Msg> {
+    div![
+        style!{
+            St::Display => "flex",
+            St::AlignItems => "center",
+            St::Padding => "10px 0",
+        },
+        div![
+            style!{
+                St::Cursor => "pointer",
+                St::Padding => "5px 15px",
+                St::BackgroundColor => "lightblue",
+                St::BorderRadius => px(10),
+            },
+            simple_ev(Ev::Click, Msg::CreateFileWithSerializedLocalSearch),
+            "Create file with serialized LocalSearch"
+        ],
     ]
 }
 

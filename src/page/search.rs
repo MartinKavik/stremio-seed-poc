@@ -51,7 +51,7 @@ pub fn init(
         cinemeta_minisearch: minisearch_search_panel::init("Cinemeta (minisearch js)", "/data/cinemeta.json"),
         cinemeta_lite_localsearch: localsearch_search_panel::init("Cinemeta-lite (localsearch) WIP", "/data/cinemeta-lite.json"),
         cinemeta_localsearch: localsearch_search_panel::init("Cinemeta (localsearch) WIP", "/data/cinemeta.json"),
-        cinemeta_preindexed_localsearch: preindexed_localsearch_search_panel::init("Cinemeta (preindexed localsearch) WIP", "/data/cinemeta.json"),
+        cinemeta_preindexed_localsearch: preindexed_localsearch_search_panel::init("Cinemeta (preindexed localsearch) NOT IMPLEMENTED (YET)", "/data/cinemeta.json"),
     }
 }
 
