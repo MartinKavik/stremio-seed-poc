@@ -8,7 +8,8 @@ function index_multisearch(documents) {
 }
 
 function search_multisearch(query) {
-    return window.my_MiniSearch.search(query, { fuzzy: 0.2, /* prefix: true - "the office" - modify weights? */ })
+//    return window.my_MiniSearch.search(query, { fuzzy: 0.2, /* prefix: true - "the office" - modify weights? */ })
+    return window.my_MiniSearch.search(query)
 }
 
 console.log("minisearch script finished");

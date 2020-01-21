@@ -12,7 +12,8 @@ type Score = f64;
 
 #[derive(PartialEq, Eq, Hash, Clone)]
 // @TODO Rename to DocId?
-struct InternalId(String);
+#[derive(Debug)]
+pub struct InternalId(String);
 
 pub struct ResultItem {
     pub id: Id,
@@ -25,11 +26,13 @@ pub struct Document {
     pub text: Text,
 }
 
-struct IndexData {
-    // @TODO rename to document_frequency?
+// @TODO remove pub
+#[derive(Debug)]
+pub struct IndexData {
+    // @TODO rename to document_frequency?  // @TODO can get from the next field
     num_of_texts_with_token: usize,
     // @TODO rename to term_frequency or token_frequency?
-    nums_of_token_occurrences_in_text: HashMap<InternalId, usize>,
+    pub nums_of_token_occurrences_in_text: HashMap<InternalId, usize>,
 }
 
 struct SearchQuery {
@@ -48,6 +51,26 @@ pub struct LocalSearch {
 }
 
 impl LocalSearch {
+    // @TODO remove
+    pub fn document_count(&self) -> usize {
+        self.document_ids.len()
+    }
+
+    // @TODO remove
+    pub fn total_length(&self) -> usize {
+        self.total_num_of_tokens_in_text
+    }
+
+    // @TODO remove
+    pub fn average_length(&self) -> f64 {
+        self.total_num_of_tokens_in_text as f64 / self.document_ids.len() as f64
+    }
+
+    // @TODO remove
+    pub fn token_the(&self) -> &IndexData {
+        self.index.get("the").unwrap()
+    }
+
     pub fn new() -> Self {
         Self {
             index: Trie::new(),
@@ -111,6 +134,7 @@ impl LocalSearch {
                 })
             })
             .flatten()
+            .take(max_results)
             .collect()
     }
 
@@ -128,6 +152,7 @@ impl LocalSearch {
                 *num_of_token_occurrences_in_text += 1;
             } else {
                 index_data.num_of_texts_with_token += 1;
+                index_data.nums_of_token_occurrences_in_text.insert(internal_id.clone(), 1);
             }
         } else {
             let index_data = IndexData {

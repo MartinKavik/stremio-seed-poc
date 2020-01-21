@@ -112,6 +112,7 @@ pub fn update<GMs>(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg, GM
             let index_start = model.performance.now();
             model.local_search = index(&model.downloaded_records);
             model.index_time = Some(model.performance.now() - index_start);
+//            log_all(&model.local_search);
             orders.send_msg(Msg::Search);
         },
         Msg::MaxResultsChanged(max_results) => {
@@ -130,6 +131,30 @@ pub fn update<GMs>(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg, GM
             model.search_time = Some(model.performance.now() - search_start);
         }
     }
+}
+
+pub fn log_document_count(doc_count: usize) {
+    log!("document_count", doc_count);
+}
+
+pub fn log_total_length(total_num_of_tokens_in_text: usize) {
+    log!("total_length", total_num_of_tokens_in_text);
+}
+
+pub fn log_average_length(average: f64) {
+    log!("average_length", average);
+}
+
+pub fn log_token_the(token: &localsearch::IndexData) {
+    log!("token_the", token);
+    log!("nums_of_token_occurrences_in_text", token.nums_of_token_occurrences_in_text.len());
+}
+
+pub fn log_all(ls: &LocalSearch) {
+    log_document_count(ls.document_count());
+    log_total_length(ls.total_length());
+    log_average_length(ls.average_length());
+    log_token_the(ls.token_the());
 }
 
 // ------ ------
