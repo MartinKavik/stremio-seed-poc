@@ -12,14 +12,14 @@ pub struct Model {
     title: &'static str,
     download_url: &'static str,
     downloaded_records: Vec<Record>,
-    local_search: LocalSearch,
+    local_search: LocalSearch<Record>,
     download_start: f64,
     download_time: Option<f64>,
     index_time: Option<f64>,
     query: String,
     search_time: Option<f64>,
     max_results: usize,
-    results: Vec<localsearch::ResultItem>,
+    results: Vec<localsearch::ResultItemOwned<Record>>,
     performance: Performance,
 }
 
@@ -44,7 +44,7 @@ pub fn init(
         title,
         download_url,
         downloaded_records: Vec::new(),
-        local_search: LocalSearch::new(),
+        local_search: LocalSearch::new(|rec: &Record| &rec.name),
         download_start: 0.,
         download_time: None,
         index_time: None,
@@ -76,22 +76,16 @@ async fn fetch_records(url: &'static str) -> Result<Msg, Msg> {
         .await
 }
 
-fn index(downloaded_records: &[Record]) -> LocalSearch {
-    let documents =
-        downloaded_records
-            .iter()
-            .map(|record| {
-                // @TODO optimize
-                localsearch::Document {
-                    id: record.id.clone(),
-                    text: record.name.clone(),
-                }
-            });
-    LocalSearch::with_documents(documents)
+fn index(downloaded_records: Vec<Record>) -> LocalSearch<Record> {
+    LocalSearch::with_documents(downloaded_records, |rec| &rec.name)
 }
 
-fn search(query: &str, local_search: &LocalSearch, max_results: usize) -> Vec<localsearch::ResultItem> {
-    local_search.search(query, max_results)
+fn search(query: &str, local_search: &LocalSearch<Record>, max_results: usize) -> Vec<localsearch::ResultItemOwned<Record>> {
+    local_search
+        .search(query, max_results)
+        .iter()
+        .map(|result| result.to_owned_result())
+        .collect()
 }
 
 pub fn update<GMs>(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg, GMs>) {
@@ -109,10 +103,10 @@ pub fn update<GMs>(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg, GM
             log!("Download error", err);
         },
         Msg::Index => {
+            let records = model.downloaded_records.clone();
             let index_start = model.performance.now();
-            model.local_search = index(&model.downloaded_records);
+            model.local_search = index(records);
             model.index_time = Some(model.performance.now() - index_start);
-//            log_all(&model.local_search);
             orders.send_msg(Msg::Search);
         },
         Msg::MaxResultsChanged(max_results) => {
@@ -131,30 +125,6 @@ pub fn update<GMs>(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg, GM
             model.search_time = Some(model.performance.now() - search_start);
         }
     }
-}
-
-pub fn log_document_count(doc_count: usize) {
-    log!("document_count", doc_count);
-}
-
-pub fn log_total_length(total_num_of_tokens_in_text: usize) {
-    log!("total_length", total_num_of_tokens_in_text);
-}
-
-pub fn log_average_length(average: f64) {
-    log!("average_length", average);
-}
-
-pub fn log_token_the(token: &localsearch::IndexData) {
-    log!("token_the", token);
-    log!("nums_of_token_occurrences_in_text", token.nums_of_token_occurrences_in_text.len());
-}
-
-pub fn log_all(ls: &LocalSearch) {
-    log_document_count(ls.document_count());
-    log_total_length(ls.total_length());
-    log_average_length(ls.average_length());
-    log_token_the(ls.token_the());
 }
 
 // ------ ------
@@ -300,7 +270,7 @@ pub fn view_results(model: &Model) -> Node<Msg> {
     ]
 }
 
-pub fn view_result(result_item_data: (usize, &localsearch::ResultItem)) -> Node<Msg> {
+pub fn view_result(result_item_data: (usize, &localsearch::ResultItemOwned<Record>)) -> Node<Msg> {
     let (index, result_item) = result_item_data;
     tr![
         style!{
@@ -310,13 +280,13 @@ pub fn view_result(result_item_data: (usize, &localsearch::ResultItem)) -> Node<
             style!{
                 St::Padding => px(10),
             },
-            result_item.id,
+            result_item.document.id,
         ],
         td![
             style!{
                 St::Padding => px(10),
             },
-            result_item.text,
+            result_item.document.name,
         ],
         td![
             style!{

@@ -1,225 +1,171 @@
-use std::collections::HashMap;
+use indexmap::{IndexMap, indexmap};
 use radix_trie::Trie;
-use radix_fmt::radix_36;
 use unicode_segmentation::UnicodeSegmentation;
 
-// @TODO new types?
-pub type Id = String;
-pub type Text = String;
-type RawToken = str;
+type DocId = usize;
 type Token = String;
 type Score = f64;
+type TokenCount = usize;
+type TokenOccurenceCount = usize;
+type DocIdTokenOccurenceCountPairs = IndexMap<DocId, TokenOccurenceCount>;
 
-#[derive(PartialEq, Eq, Hash, Clone)]
-// @TODO Rename to DocId?
-#[derive(Debug)]
-pub struct InternalId(String);
+const EQUAL_DOC_BOOST: f64 = 3.;
 
-pub struct ResultItem {
-    pub id: Id,
-    pub text: Text,
+pub fn default_tokenizer(text: &str) -> Vec<Token> {
+    text
+        .unicode_words()
+        .map(str::to_lowercase)
+        .collect()
+}
+
+pub struct ResultItem<'a, T> {
+    pub document: &'a T,
     pub score: f64,
 }
 
-pub struct Document {
-    pub id: Id,
-    pub text: Text,
+impl<T: Clone> ResultItem<'_, T> {
+    pub fn to_owned_result(&self) -> ResultItemOwned<T> {
+        ResultItemOwned {
+            document: self.document.clone(),
+            score: self.score,
+        }
+    }
 }
 
-// @TODO remove pub
-#[derive(Debug)]
-pub struct IndexData {
-    // @TODO rename to document_frequency?  // @TODO can get from the next field
-    num_of_texts_with_token: usize,
-    // @TODO rename to term_frequency or token_frequency?
-    pub nums_of_token_occurrences_in_text: HashMap<InternalId, usize>,
+pub struct ResultItemOwned<T> {
+    pub document: T,
+    pub score: f64,
 }
 
-struct SearchQuery {
-    token: Token,
-    fuzzy: bool,
-    prefix: bool,
+pub struct LocalSearch<T> {
+    index: Trie<Token, DocIdTokenOccurenceCountPairs>,
+    documents: IndexMap<DocId, (T, TokenCount)>,
+    text_getter: Box<dyn Fn(&T) -> &str>,
+    tokenizer: Box<dyn Fn(&str) -> Vec<Token>>,
+    doc_id_generator: DocIdGenerator,
 }
 
-pub struct LocalSearch {
-    index: Trie<Token, IndexData>,
-    next_id: usize,
-    document_ids: HashMap<InternalId, Id>, // @TODO merge with `document_texts`? + v
-    document_texts: HashMap<InternalId, Text>, // @TODO reference to `InternalId`?  + ^
-    total_num_of_tokens_in_text: usize,
-    nums_of_tokens_in_text: HashMap<InternalId, usize>, // @TODO merge with `document_texts`?
+#[derive(Default)]
+struct DocIdGenerator(DocId);
+
+impl DocIdGenerator {
+    pub fn next(&mut self) -> DocId {
+        self.0 += 1;
+        self.0
+    }
 }
 
-impl LocalSearch {
-    // @TODO remove
-    pub fn document_count(&self) -> usize {
-        self.document_ids.len()
+impl<T> LocalSearch<T> {
+    pub fn new(text_getter: impl (Fn(&T) -> &str) + 'static) -> Self {
+        Self::with_capacity(text_getter, 0)
     }
 
-    // @TODO remove
-    pub fn total_length(&self) -> usize {
-        self.total_num_of_tokens_in_text
-    }
-
-    // @TODO remove
-    pub fn average_length(&self) -> f64 {
-        self.total_num_of_tokens_in_text as f64 / self.document_ids.len() as f64
-    }
-
-    // @TODO remove
-    pub fn token_the(&self) -> &IndexData {
-        self.index.get("the").unwrap()
-    }
-
-    pub fn new() -> Self {
+    pub fn with_capacity(text_getter: impl (Fn(&T) -> &str) + 'static, capacity: usize) -> Self {
         Self {
             index: Trie::new(),
-            next_id: 0,
-            document_ids: HashMap::new(), // @TODO with capacity and faster hasher or structure ?
-            document_texts: HashMap::new(), // @TODO with capacity and faster hasher or structure ?
-            total_num_of_tokens_in_text: 0,
-            nums_of_tokens_in_text: HashMap::new(), // @TODO with capacity and faster hasher or structure ?
+            documents: IndexMap::with_capacity(capacity),
+            text_getter: Box::new(text_getter),
+            tokenizer: Box::new(default_tokenizer),
+            doc_id_generator: DocIdGenerator::default(),
         }
     }
 
-    pub fn with_documents(documents: impl Iterator<Item=Document>) -> Self {
-        let mut local_search = Self::new();
+    pub fn with_documents(documents: Vec<T>, text_getter: impl (Fn(&T) -> &str) + 'static) -> Self {
+        let mut local_search = Self::with_capacity(text_getter, documents.len());
         local_search.add_documents(documents);
         local_search
     }
 
-    pub fn add_documents(&mut self, documents: impl Iterator<Item=Document>) {
+    pub fn add_documents(&mut self, documents: Vec<T>) {
+        self.documents.reserve(documents.len());
         for document in documents {
             self.add_document(document)
         }
     }
 
-    pub fn add_document(&mut self, document: Document) {
-        let Document { id, text } = document;
-        let internal_id = self.add_document_id(id);
+    pub fn add_document(&mut self, document: T) {
+        let doc_id = self.doc_id_generator.next();
+        let text = (self.text_getter)(&document);
+        let tokens = (self.tokenizer)(text);
+        let token_count = tokens.len();
 
-        let mut num_of_tokens = 0;
-        for raw_token in tokenize(&text) {
-            self.add_token(&process_token(raw_token), &internal_id);
-            num_of_tokens += 1;
+        self.documents.insert(doc_id, (document, token_count));
+
+        for token in tokens {
+            self.add_token(token, doc_id);
         }
-        self.document_texts.insert(internal_id.clone(), text);
-        self.nums_of_tokens_in_text.insert(internal_id, num_of_tokens);
-        self.total_num_of_tokens_in_text += num_of_tokens;
     }
 
-    pub fn search(&self, query: &str, max_results: usize) -> Vec<ResultItem> {
-        let results: Vec<HashMap<InternalId, Score>> =
-            tokenize_query(query)
-                .map(process_query_token)
-                .map(token_to_search_query)
-                .map(|search_query| self.execute_search_query(search_query))
-                .collect();
+    pub fn set_tokenizer(&mut self, tokenizer: impl for <'a> Fn(&'a str) -> Vec<String> + 'static) {
+        self.tokenizer = Box::new(tokenizer);
+    }
 
-        // @TODO combinators, optimize, refactor..
-        results.
-            into_iter()
-            .map(|hash_map: HashMap<InternalId, Score> | {
-                let mut vec: Vec<(InternalId, Score)> = hash_map.into_iter().collect();
-                vec.sort_by(|(_, score_a), (_, score_b)| score_a.partial_cmp(score_b).expect("compare scores"));
-                vec
+    fn add_token(&mut self, token: Token, doc_id: DocId) {
+        self.index.map_with_default(token, |doc_id_token_occurrence_count_pairs| {
+            doc_id_token_occurrence_count_pairs
+                .entry(doc_id)
+                .and_modify(|count| *count += 1)
+                .or_insert(1);
+        }, indexmap!{ doc_id => 1 })
+    }
+
+    pub fn search(&self, query: &str, max_results: usize) -> Vec<ResultItem<T>> {
+        (self.tokenizer)(query)
+            .into_iter()
+            .flat_map(|token| self.search_exact(token))
+            .fold(IndexMap::new(), |mut results, (doc_id, score)| {
+                results
+                    .entry(doc_id)
+                    .and_modify(|merged_score| *merged_score = (*merged_score + score) * EQUAL_DOC_BOOST)
+                    .or_insert(score);
+                results
             })
-            .map(|vec| {
-                vec.into_iter().map(|(internal_id, score)| {
-                    ResultItem {
-                        score,
-                        id: self.document_ids.get(&internal_id).expect("get document id").clone(),
-                        text: self.document_texts.get(&internal_id).expect("get document id").clone(),
-                    }
-                })
-            })
-            .flatten()
+            .sorted_by(|_, score_a, _, score_b| score_b.partial_cmp(score_a).expect("compare score"))
             .take(max_results)
+            .map(|(doc_id, score)| {
+                ResultItem {
+                    document: self.documents.get(&doc_id).map(|(doc, _)| doc).expect("get document"),
+                    score,
+                }
+            })
             .collect()
     }
 
-    // @TODO short strings vs usize?
-    fn add_document_id(&mut self, document_id: Id) -> InternalId {
-        let internal_id = InternalId(radix_36(self.next_id).to_string());
-        self.document_ids.insert(internal_id.clone(), document_id);
-        self.next_id += 1;
-        internal_id
+    fn search_exact(&self, token: Token) -> IndexMap<DocId, Score> {
+        self
+            .index
+            .get(&token)
+            .map(|doc_id_token_occurrence_count_pairs| {
+                doc_id_token_occurrence_count_pairs
+                    .into_iter()
+                    .fold(IndexMap::new(), |mut results, (doc_id, token_occurrence_count)| {
+                        let token_count = self.documents.get(doc_id).map(|(_, count)| *count).expect("get token count");
+                        let score = self.tf_idf(*token_occurrence_count, token_count, doc_id_token_occurrence_count_pairs.len());
+                        results.insert(*doc_id, score);
+                        results
+                    })
+            })
+            .unwrap_or_default()
     }
 
-    fn add_token(&mut self, token: &Token, internal_id: &InternalId) {
-        if let Some(index_data) = self.index.get_mut(token) {
-            if let Some(num_of_token_occurrences_in_text) = index_data.nums_of_token_occurrences_in_text.get_mut(internal_id) {
-                *num_of_token_occurrences_in_text += 1;
-            } else {
-                index_data.num_of_texts_with_token += 1;
-                index_data.nums_of_token_occurrences_in_text.insert(internal_id.clone(), 1);
-            }
-        } else {
-            let index_data = IndexData {
-                num_of_texts_with_token: 1,
-                nums_of_token_occurrences_in_text: {
-                    // @TODO with capacity and faster hasher or structure ?
-                    let mut nums_of_token_occurrences_in_text = HashMap::new();
-                    nums_of_token_occurrences_in_text.insert(internal_id.clone(), 1);
-                    nums_of_token_occurrences_in_text
-                }
-            };
-            self.index.insert(token.clone(), index_data);
-        }
-    }
+    // https://towardsdatascience.com/tf-term-frequency-idf-inverse-document-frequency-from-scratch-in-python-6c2b61b78558
+    fn tf_idf(&self, token_occurrence_count: usize, token_count: usize, num_of_docs_with_token: usize) -> f64 {
+        // Term Frequency (TF)
+        // tf(t,d) = count of t in d / number of words in d
+//        let tf = token_occurrence_count as f64 / token_count as f64;
+        let tf = token_occurrence_count as f64 / token_count as f64;
 
-    fn execute_search_query(&self, search_query: SearchQuery) -> HashMap<InternalId, Score> {
-        let results = self.execute_exact_search(&search_query.token);
-        results
-    }
+        // Document Frequency (DF)
+        // df(t) = occurrence of t in documents
+        let df = num_of_docs_with_token as f64;
 
-    fn execute_exact_search(&self, token: &Token) -> HashMap<InternalId, Score> {
-        if let Some(index_data) = self.index.get(token) {
-            let mut results = HashMap::new();
-            let average_num_of_tokens_in_text = self.total_num_of_tokens_in_text as f64 / self.document_ids.len() as f64;
+        // Inverse Document Frequency (IDF)
+        // idf(t) = log(N/(df + 1))
+        let n = self.documents.len() as f64;
+        let idf = (n / (df + 1.0)).log10();
 
-            for (internal_id, num_of_token_occurrences) in &index_data.nums_of_token_occurrences_in_text {
-                let normalized_num_of_token_occurrences = *num_of_token_occurrences as f64 / average_num_of_tokens_in_text;
-                let score = self.score(index_data.num_of_texts_with_token, *num_of_token_occurrences, normalized_num_of_token_occurrences);
-                results.insert(internal_id.clone(), score);
-            }
-            results
-        } else {
-            HashMap::new() // @TODO with capacity and faster hasher or structure ?
-        }
-    }
-
-    fn score(&self, num_of_texts_with_token: usize, num_of_token_occurrences: usize, normalized_num_of_token_occurrences: f64) -> Score {
-        self.tf_idf(num_of_texts_with_token, num_of_token_occurrences) / normalized_num_of_token_occurrences
-    }
-
-    fn tf_idf(&self, tf: usize, df: usize) -> f64 {
-        let n = self.document_ids.len();
-        tf as f64 * f64::ln(n as f64 / df as f64)
-    }
-}
-
-fn tokenize(text: &str) -> impl Iterator<Item=&RawToken> {
-    text.unicode_words()
-}
-
-fn tokenize_query(query: &str) -> impl Iterator<Item=&RawToken> {
-    tokenize(query)
-}
-
-fn process_token(raw_token: &RawToken) -> Token {
-    raw_token.to_lowercase()
-}
-
-fn process_query_token(raw_token: &RawToken) -> Token {
-    process_token(raw_token)
-}
-
-fn token_to_search_query(token: Token) -> SearchQuery {
-    SearchQuery {
-        token,
-        prefix: false, // @TODO not implemented
-        fuzzy: false, // @TODO not implemented
+        // tf-idf(t, d) = tf(t, d) * log(N/(df + 1))
+        tf * idf
     }
 }
 
