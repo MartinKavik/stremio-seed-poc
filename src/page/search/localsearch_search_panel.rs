@@ -18,7 +18,9 @@ pub struct Model {
     index_time: Option<f64>,
     query: String,
     search_time: Option<f64>,
+    max_autocomplete_results: usize,
     max_results: usize,
+    autocomplete_results: Vec<String>,
     results: Vec<localsearch::ResultItemOwned<Record>>,
     performance: Performance,
 }
@@ -50,7 +52,9 @@ pub fn init(
         index_time: None,
         query: "".to_owned(),
         search_time: None,
+        max_autocomplete_results: 5,
         max_results: 5,
+        autocomplete_results: Vec::new(),
         results: Vec::new(),
         performance: window().performance().expect("get `Performance`"),
     }
@@ -65,6 +69,7 @@ pub enum Msg {
     Download,
     Downloaded(fetch::ResponseDataResult<Vec<Record>>),
     Index,
+    MaxAutocompleteResultsChanged(String),
     MaxResultsChanged(String),
     QueryChanged(String),
     Search,
@@ -88,6 +93,14 @@ fn search(query: &str, local_search: &LocalSearch<Record>, max_results: usize) -
         .collect()
 }
 
+fn autocomplete(query: &str, local_search: &LocalSearch<Record>, max_results: usize) -> Vec<String> {
+    if let Some(last_token) = localsearch::default_tokenizer(query).last() {
+        local_search.autocomplete(last_token, max_results)
+    } else {
+        Vec::new()
+    }
+}
+
 pub fn update<GMs>(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg, GMs>) {
     match msg {
         Msg::Download => {
@@ -109,6 +122,12 @@ pub fn update<GMs>(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg, GM
             model.index_time = Some(model.performance.now() - index_start);
             orders.send_msg(Msg::Search);
         },
+        Msg::MaxAutocompleteResultsChanged(max_results) => {
+            if let Ok(max_results) = usize::from_str(&max_results) {
+                model.max_autocomplete_results = max_results;
+                orders.send_msg(Msg::Search);
+            }
+        },
         Msg::MaxResultsChanged(max_results) => {
             if let Ok(max_results) = usize::from_str(&max_results) {
                 model.max_results = max_results;
@@ -123,6 +142,7 @@ pub fn update<GMs>(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg, GM
             let search_start = model.performance.now();
             model.results = search(&model.query, &model.local_search, model.max_results);
             model.search_time = Some(model.performance.now() - search_start);
+            model.autocomplete_results = autocomplete(&model.query, &model.local_search, model.max_autocomplete_results);
         }
     }
 }
@@ -142,8 +162,10 @@ pub fn view(model: &Model) -> Node<Msg> {
         ],
         view_download(model),
         view_index(model),
+        view_max_autocomplete_results(model),
         view_max_results(model),
         view_query(model),
+        view_autocomplete_results(model),
         view_results(model),
     ]
 }
@@ -200,6 +222,31 @@ pub fn view_index(model: &Model) -> Node<Msg> {
     ]
 }
 
+pub fn view_max_autocomplete_results(model: &Model) -> Node<Msg> {
+    div![
+        style!{
+            St::Display => "flex",
+            St::AlignItems => "center",
+            St::Padding => "10px 0",
+        },
+        div![
+            "Max autocomplete results:"
+        ],
+        input![
+            style!{
+                St::Padding => "3px 8px",
+                St::Margin => "0 10px",
+                St::Border => "2px solid black",
+            },
+            attrs!{
+                At::Value => model.max_autocomplete_results,
+                At::Type => "number",
+            },
+            input_ev(Ev::Input, Msg::MaxAutocompleteResultsChanged),
+        ],
+    ]
+}
+
 pub fn view_max_results(model: &Model) -> Node<Msg> {
     div![
         style!{
@@ -251,6 +298,13 @@ pub fn view_query(model: &Model) -> Node<Msg> {
         ],
     ]
 }
+
+pub fn view_autocomplete_results(model: &Model) -> Node<Msg> {
+    div![
+        model.autocomplete_results.join(" - ")
+    ]
+}
+
 
 pub fn view_results(model: &Model) -> Node<Msg> {
     table![

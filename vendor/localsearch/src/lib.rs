@@ -11,8 +11,9 @@ type TokenOccurenceCount = usize;
 type DocIdTokenOccurenceCountPairs = IndexMap<DocId, TokenOccurenceCount>;
 type Distance = usize;
 
-const EQUAL_DOC_BOOST: f64 = 3.;
 const DEFAULT_EDIT_DISTANCE: usize = 1;
+const EQUAL_DOC_BOOST: f64 = 3.;
+const PREFIX_BOOST: f64 = 1.5;
 
 pub fn default_tokenizer(text: &str) -> Vec<Token> {
     text
@@ -59,6 +60,12 @@ impl DocIdGenerator {
     }
 }
 
+#[derive(Clone, Copy)]
+struct RelatedTokenData {
+    distance: Option<Distance>,
+    same_prefix: bool,
+}
+
 impl<T> LocalSearch<T> {
 
     // ------ pub ------
@@ -102,8 +109,8 @@ impl<T> LocalSearch<T> {
     pub fn search(&self, query: &str, max_results: usize) -> Vec<ResultItem<T>> {
         (self.tokenizer)(query)
             .into_iter()
-            .flat_map(|token| self.tokens_in_distance(token))
-            .flat_map(|(token, distance)| self.search_exact(token, distance))
+            .flat_map(|token| self.related_tokens(token))
+            .flat_map(|(token, data)| self.search_exact(token, data))
             .fold(IndexMap::new(), |mut results, (doc_id, score)| {
                 results
                     .entry(doc_id)
@@ -120,6 +127,22 @@ impl<T> LocalSearch<T> {
                 }
             })
             .collect()
+    }
+
+    // @TODO: Loop - Optimize as soon as this is resolved - https://github.com/BurntSushi/fst/issues/60
+    // @TODO Return cows?
+    pub fn autocomplete(&self, query_token: &str, max_results: usize) -> Vec<String> {
+        let mut results = Vec::new();
+        for token in self.index.keys() {
+            if token.starts_with(&query_token) {
+                results.push(token.clone());
+
+                if results.len() == max_results {
+                    break
+                }
+            }
+        }
+        results
     }
 
     // ------ private ------
@@ -146,23 +169,33 @@ impl<T> LocalSearch<T> {
         }, indexmap!{ doc_id => 1 })
     }
 
-    // @TODO: Optimize as soon as this is resolved - https://github.com/BurntSushi/fst/issues/60
-    fn tokens_in_distance(&self, query_token: Token) -> Vec<(Token, Distance)> {
-        self
-            .index
-            .keys()
-            .filter_map(|token| {
-                let distance = generic_levenshtein::distance(&query_token, token);
-                if distance <= self.max_edit_distance {
-                    Some((token.clone(), distance))
-                } else {
-                    None
-                }
-            })
-            .collect()
+    // @TODO: Loops - Optimize as soon as this is resolved - https://github.com/BurntSushi/fst/issues/60
+    fn related_tokens(&self, query_token: Token) -> IndexMap<Token, RelatedTokenData> {
+        let mut related_tokens = IndexMap::new();
+
+        for token in self.index.keys() {
+            let distance = generic_levenshtein::distance(&query_token, token);
+            if distance <= self.max_edit_distance {
+                related_tokens.insert(token.clone(), RelatedTokenData {
+                    distance: Some(distance),
+                    same_prefix: false,
+                });
+            }
+
+            if token.starts_with(&query_token) {
+                related_tokens
+                    .entry(token.clone())
+                    .and_modify(|data| data.same_prefix = true)
+                    .or_insert_with(|| RelatedTokenData {
+                        distance: None,
+                        same_prefix: true
+                    });
+            }
+        }
+        related_tokens
     }
 
-    fn search_exact(&self, token: Token, distance: usize) -> IndexMap<DocId, Score> {
+    fn search_exact(&self, token: Token, token_data: RelatedTokenData) -> IndexMap<DocId, Score> {
         self
             .index
             .get(&token)
@@ -172,12 +205,22 @@ impl<T> LocalSearch<T> {
                     .fold(IndexMap::new(), |mut results, (doc_id, token_occurrence_count)| {
                         let token_count = self.documents.get(doc_id).map(|(_, count)| *count).expect("get token count");
                         let tf_idf = self.tf_idf(*token_occurrence_count, token_count, doc_id_token_occurrence_count_pairs.len());
-                        let score = tf_idf * (self.max_edit_distance - distance) as f64;
+                        let score = self.score(tf_idf, token_data);
                         results.insert(*doc_id, score);
                         results
                     })
             })
             .unwrap_or_default()
+    }
+
+    fn score(&self, tf_idf: f64, token_data: RelatedTokenData) -> Score {
+        let distance_boost = token_data.distance.map(|distance|self.max_edit_distance + 1 - distance).unwrap_or(1) as f64;
+        let prefix_boost = if token_data.same_prefix {
+            PREFIX_BOOST
+        } else {
+            1.
+        };
+        (1. + tf_idf) * distance_boost * prefix_boost
     }
 
     // https://towardsdatascience.com/tf-term-frequency-idf-inverse-document-frequency-from-scratch-in-python-6c2b61b78558
