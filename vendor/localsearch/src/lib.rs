@@ -1,6 +1,7 @@
 use indexmap::{IndexMap, indexmap};
-use radix_trie::Trie;
+use radix_trie::{Trie, TrieCommon};
 use unicode_segmentation::UnicodeSegmentation;
+use generic_levenshtein;
 
 type DocId = usize;
 type Token = String;
@@ -8,8 +9,10 @@ type Score = f64;
 type TokenCount = usize;
 type TokenOccurenceCount = usize;
 type DocIdTokenOccurenceCountPairs = IndexMap<DocId, TokenOccurenceCount>;
+type Distance = usize;
 
 const EQUAL_DOC_BOOST: f64 = 3.;
+const DEFAULT_EDIT_DISTANCE: usize = 1;
 
 pub fn default_tokenizer(text: &str) -> Vec<Token> {
     text
@@ -43,6 +46,7 @@ pub struct LocalSearch<T> {
     text_getter: Box<dyn Fn(&T) -> &str>,
     tokenizer: Box<dyn Fn(&str) -> Vec<Token>>,
     doc_id_generator: DocIdGenerator,
+    max_edit_distance: Distance,
 }
 
 #[derive(Default)]
@@ -56,6 +60,9 @@ impl DocIdGenerator {
 }
 
 impl<T> LocalSearch<T> {
+
+    // ------ pub ------
+
     pub fn new(text_getter: impl (Fn(&T) -> &str) + 'static) -> Self {
         Self::with_capacity(text_getter, 0)
     }
@@ -67,6 +74,7 @@ impl<T> LocalSearch<T> {
             text_getter: Box::new(text_getter),
             tokenizer: Box::new(default_tokenizer),
             doc_id_generator: DocIdGenerator::default(),
+            max_edit_distance: DEFAULT_EDIT_DISTANCE,
         }
     }
 
@@ -76,6 +84,14 @@ impl<T> LocalSearch<T> {
         local_search
     }
 
+    pub fn set_tokenizer(&mut self, tokenizer: impl for <'a> Fn(&'a str) -> Vec<String> + 'static) {
+        self.tokenizer = Box::new(tokenizer);
+    }
+
+    pub fn set_max_edit_distance(&mut self, distance: Distance) {
+        self.max_edit_distance = distance;
+    }
+
     pub fn add_documents(&mut self, documents: Vec<T>) {
         self.documents.reserve(documents.len());
         for document in documents {
@@ -83,36 +99,11 @@ impl<T> LocalSearch<T> {
         }
     }
 
-    pub fn add_document(&mut self, document: T) {
-        let doc_id = self.doc_id_generator.next();
-        let text = (self.text_getter)(&document);
-        let tokens = (self.tokenizer)(text);
-        let token_count = tokens.len();
-
-        self.documents.insert(doc_id, (document, token_count));
-
-        for token in tokens {
-            self.add_token(token, doc_id);
-        }
-    }
-
-    pub fn set_tokenizer(&mut self, tokenizer: impl for <'a> Fn(&'a str) -> Vec<String> + 'static) {
-        self.tokenizer = Box::new(tokenizer);
-    }
-
-    fn add_token(&mut self, token: Token, doc_id: DocId) {
-        self.index.map_with_default(token, |doc_id_token_occurrence_count_pairs| {
-            doc_id_token_occurrence_count_pairs
-                .entry(doc_id)
-                .and_modify(|count| *count += 1)
-                .or_insert(1);
-        }, indexmap!{ doc_id => 1 })
-    }
-
     pub fn search(&self, query: &str, max_results: usize) -> Vec<ResultItem<T>> {
         (self.tokenizer)(query)
             .into_iter()
-            .flat_map(|token| self.search_exact(token))
+            .flat_map(|token| self.tokens_in_distance(token))
+            .flat_map(|(token, distance)| self.search_exact(token, distance))
             .fold(IndexMap::new(), |mut results, (doc_id, score)| {
                 results
                     .entry(doc_id)
@@ -131,7 +122,47 @@ impl<T> LocalSearch<T> {
             .collect()
     }
 
-    fn search_exact(&self, token: Token) -> IndexMap<DocId, Score> {
+    // ------ private ------
+
+    fn add_document(&mut self, document: T) {
+        let doc_id = self.doc_id_generator.next();
+        let text = (self.text_getter)(&document);
+        let tokens = (self.tokenizer)(text);
+        let token_count = tokens.len();
+
+        self.documents.insert(doc_id, (document, token_count));
+
+        for token in tokens {
+            self.add_token(token, doc_id);
+        }
+    }
+
+    fn add_token(&mut self, token: Token, doc_id: DocId) {
+        self.index.map_with_default(token, |doc_id_token_occurrence_count_pairs| {
+            doc_id_token_occurrence_count_pairs
+                .entry(doc_id)
+                .and_modify(|count| *count += 1)
+                .or_insert(1);
+        }, indexmap!{ doc_id => 1 })
+    }
+
+    // @TODO: Optimize as soon as this is resolved - https://github.com/BurntSushi/fst/issues/60
+    fn tokens_in_distance(&self, query_token: Token) -> Vec<(Token, Distance)> {
+        self
+            .index
+            .keys()
+            .filter_map(|token| {
+                let distance = generic_levenshtein::distance(&query_token, token);
+                if distance <= self.max_edit_distance {
+                    Some((token.clone(), distance))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn search_exact(&self, token: Token, distance: usize) -> IndexMap<DocId, Score> {
         self
             .index
             .get(&token)
@@ -140,7 +171,8 @@ impl<T> LocalSearch<T> {
                     .into_iter()
                     .fold(IndexMap::new(), |mut results, (doc_id, token_occurrence_count)| {
                         let token_count = self.documents.get(doc_id).map(|(_, count)| *count).expect("get token count");
-                        let score = self.tf_idf(*token_occurrence_count, token_count, doc_id_token_occurrence_count_pairs.len());
+                        let tf_idf = self.tf_idf(*token_occurrence_count, token_count, doc_id_token_occurrence_count_pairs.len());
+                        let score = tf_idf * (self.max_edit_distance - distance) as f64;
                         results.insert(*doc_id, score);
                         results
                     })
