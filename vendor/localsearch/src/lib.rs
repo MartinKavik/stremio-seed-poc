@@ -1,6 +1,7 @@
-use indexmap::{IndexMap, indexmap};
+use fxhash::{FxHashMap, FxBuildHasher};
 use fst::{self, IntoStreamer, Automaton, Streamer};
 use std::{collections::BTreeMap, mem};
+use std::iter::FromIterator;
 use seed::log;
 
 pub type Token = String;
@@ -9,7 +10,7 @@ type DocId = usize;
 type Score = f64;
 type TokenCount = usize;
 type TokenOccurenceCount = usize;
-type DocIdTokenOccurenceCountPairs = IndexMap<DocId, TokenOccurenceCount>;
+type DocIdTokenOccurenceCountPairs = FxHashMap<DocId, TokenOccurenceCount>;
 
 mod levenshtein;
 
@@ -62,7 +63,9 @@ impl<T> LocalSearchBuilder<T> {
     }
 
     pub fn build(self) -> LocalSearch<T> {
-        let mut documents = IndexMap::<DocId, (T, TokenCount)>::with_capacity(self.documents.len());
+        let mut documents = FxHashMap::<DocId, (T, TokenCount)>::with_capacity_and_hasher(
+            self.documents.len(), FxBuildHasher::default()
+        );
         let tokenizer = self.tokenizer.unwrap_or_else(|| Box::new(default_tokenizer));
 
         let mut token_and_pairs_map = BTreeMap::<Token, DocIdTokenOccurenceCountPairs>::new();
@@ -82,7 +85,7 @@ impl<T> LocalSearchBuilder<T> {
                             .and_modify(|count| *count += 1)
                             .or_insert(1);
                     })
-                    .or_insert(indexmap! {doc_id => 1});
+                    .or_insert(FxHashMap::from_iter(vec![(doc_id, 1)]));
             }
         }
 
@@ -112,7 +115,7 @@ pub struct Index {
 // ------ LocalSearch ------
 
 pub struct LocalSearch<T> {
-    documents: IndexMap<DocId, (T, TokenCount)>,
+    documents: FxHashMap<DocId, (T, TokenCount)>,
     tokenizer: Box<dyn Fn(&str) -> Vec<Token>>,
     max_edit_distance: Distance,
     prefix_boost: f64,
@@ -128,19 +131,26 @@ impl<T> LocalSearch<T> {
     }
 
     pub fn search(&self, query: &str, max_results: usize) -> Vec<ResultItem<T>> {
-        (self.tokenizer)(query)
+        let mut doc_ids_and_scores =
+            (self.tokenizer)(query)
+                .into_iter()
+                .flat_map(|token| self.related_tokens(&token))
+                .flat_map(|(token, data)| self.search_exact(token, data))
+                .fold(FxHashMap::default(), |mut results, (doc_id, score)| {
+                    results
+                        .entry(doc_id)
+                        .and_modify(|merged_score| *merged_score = *merged_score + score)
+                        .or_insert(score);
+                    results
+                })
+                .into_iter()
+                .collect::<Vec<_>>();
+        doc_ids_and_scores.sort_unstable_by(|(_, score_a), (_, score_b)| {
+            score_b.partial_cmp(score_a).expect("sort scores")
+        });
+        doc_ids_and_scores.truncate(max_results);
+        doc_ids_and_scores
             .into_iter()
-            .flat_map(|token| self.related_tokens(&token))
-            .flat_map(|(token, data)| self.search_exact(token, data))
-            .fold(IndexMap::new(), |mut results, (doc_id, score)| {
-                results
-                    .entry(doc_id)
-                    .and_modify(|merged_score| *merged_score = *merged_score + score)
-                    .or_insert(score);
-                results
-            })
-            .sorted_by(|_, score_a, _, score_b| score_b.partial_cmp(score_a).expect("compare score"))
-            .take(max_results)
             .map(|(doc_id, score)| {
                 ResultItem {
                     document: self.documents.get(&doc_id).map(|(doc, _)| doc).expect("get document"),
@@ -170,14 +180,14 @@ impl<T> LocalSearch<T> {
 
     // ------ private ------
 
-    fn related_tokens(&self, query_token: &str) -> IndexMap<Token, RelatedTokenData> {
-        let mut related_tokens = IndexMap::new();
+    fn related_tokens(&self, query_token: &str) -> FxHashMap<Token, RelatedTokenData> {
+        let mut related_tokens = FxHashMap::default();
         self.add_tokens_in_distance(query_token, &mut related_tokens);
         self.add_tokens_with_prefix(query_token, &mut related_tokens);
         related_tokens
     }
 
-    fn add_tokens_in_distance(&self, query_token: &str, related_tokens: &mut IndexMap<Token, RelatedTokenData>) {
+    fn add_tokens_in_distance(&self, query_token: &str, related_tokens: &mut FxHashMap<Token, RelatedTokenData>) {
         let lev_query = levenshtein::Levenshtein::new(query_token, self.max_edit_distance)
             .expect("create Levenshtein automaton");
 
@@ -202,7 +212,7 @@ impl<T> LocalSearch<T> {
         }
     }
 
-    fn add_tokens_with_prefix(&self, query_token: &str, related_tokens: &mut IndexMap<Token, RelatedTokenData>) {
+    fn add_tokens_with_prefix(&self, query_token: &str, related_tokens: &mut FxHashMap<Token, RelatedTokenData>) {
         let mut token_stream =
             self
                 .index
@@ -224,7 +234,7 @@ impl<T> LocalSearch<T> {
         }
     }
 
-    fn search_exact(&self, token: Token, token_data: RelatedTokenData) -> IndexMap<DocId, Score> {
+    fn search_exact(&self, token: Token, token_data: RelatedTokenData) -> FxHashMap<DocId, Score> {
         self.index.token_and_pair_index_map
             .get(&token)
             .map(|pair_index| {
@@ -233,7 +243,7 @@ impl<T> LocalSearch<T> {
 
                 doc_id_token_occurrence_count_pairs
                     .into_iter()
-                    .fold(IndexMap::new(), |mut results, (doc_id, token_occurrence_count)| {
+                    .fold(FxHashMap::default(), |mut results, (doc_id, token_occurrence_count)| {
                         let token_count = self.documents.get(doc_id).map(|(_, count)| *count).expect("get token count");
                         let tf_idf = self.tf_idf(*token_occurrence_count, token_count, doc_id_token_occurrence_count_pairs.len());
                         let score = self.score(tf_idf, token_data);
