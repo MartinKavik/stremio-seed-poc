@@ -1,7 +1,8 @@
 use indexmap::{IndexMap, indexmap};
-use radix_trie::{Trie, TrieCommon};
 use unicode_segmentation::UnicodeSegmentation;
-use generic_levenshtein;
+use fst::{self, IntoStreamer, Automaton, Streamer};
+use std::{collections::BTreeMap, mem};
+use seed::log;
 
 type DocId = usize;
 type Token = String;
@@ -9,9 +10,9 @@ type Score = f64;
 type TokenCount = usize;
 type TokenOccurenceCount = usize;
 type DocIdTokenOccurenceCountPairs = IndexMap<DocId, TokenOccurenceCount>;
-type Distance = usize;
+type Distance = u32;
 
-const DEFAULT_EDIT_DISTANCE: usize = 1;
+const DEFAULT_EDIT_DISTANCE: u32 = 1;
 const EQUAL_DOC_BOOST: f64 = 3.;
 const PREFIX_BOOST: f64 = 1.5;
 
@@ -41,8 +42,23 @@ pub struct ResultItemOwned<T> {
     pub score: f64,
 }
 
+#[derive(Default)]
+pub struct Store {
+    token_and_pair_index_map: fst::Map<Vec<u8>>,
+    pairs: Vec<DocIdTokenOccurenceCountPairs>,
+}
+
+// impl Store {
+//     fn new() -> Self {
+//         Self {
+//             tokens_and_pair_indices: Map::default(),
+//             pairs: Vec::default()
+//         }
+//     }
+// }
+
 pub struct LocalSearch<T> {
-    index: Trie<Token, DocIdTokenOccurenceCountPairs>,
+    store: Store,
     documents: IndexMap<DocId, (T, TokenCount)>,
     text_getter: Box<dyn Fn(&T) -> &str>,
     tokenizer: Box<dyn Fn(&str) -> Vec<Token>>,
@@ -71,24 +87,14 @@ impl<T> LocalSearch<T> {
     // ------ pub ------
 
     pub fn new(text_getter: impl (Fn(&T) -> &str) + 'static) -> Self {
-        Self::with_capacity(text_getter, 0)
-    }
-
-    pub fn with_capacity(text_getter: impl (Fn(&T) -> &str) + 'static, capacity: usize) -> Self {
         Self {
-            index: Trie::new(),
-            documents: IndexMap::with_capacity(capacity),
+            store: Store::default(),
+            documents: IndexMap::new(),
             text_getter: Box::new(text_getter),
             tokenizer: Box::new(default_tokenizer),
             doc_id_generator: DocIdGenerator::default(),
             max_edit_distance: DEFAULT_EDIT_DISTANCE,
         }
-    }
-
-    pub fn with_documents(documents: Vec<T>, text_getter: impl (Fn(&T) -> &str) + 'static) -> Self {
-        let mut local_search = Self::with_capacity(text_getter, documents.len());
-        local_search.add_documents(documents);
-        local_search
     }
 
     pub fn set_tokenizer(&mut self, tokenizer: impl for <'a> Fn(&'a str) -> Vec<String> + 'static) {
@@ -99,17 +105,49 @@ impl<T> LocalSearch<T> {
         self.max_edit_distance = distance;
     }
 
-    pub fn add_documents(&mut self, documents: Vec<T>) {
-        self.documents.reserve(documents.len());
+    pub fn set_documents(&mut self, documents: Vec<T>) {
+        self.documents = IndexMap::with_capacity(documents.len());
+        self.doc_id_generator = DocIdGenerator::default();
+
+        let mut token_and_pairs_map = BTreeMap::<Token, DocIdTokenOccurenceCountPairs>::new();
+
         for document in documents {
-            self.add_document(document)
+            let doc_id = self.doc_id_generator.next();
+            let text = (self.text_getter)(&document);
+            let tokens = (self.tokenizer)(text);
+            let token_count = tokens.len();
+            self.documents.insert(doc_id, (document, token_count));
+
+            for token in tokens {
+                token_and_pairs_map
+                    .entry(token)
+                    .and_modify(|doc_id_token_occurrence_count_pairs| {
+                        doc_id_token_occurrence_count_pairs
+                            .entry(doc_id)
+                            .and_modify(|count| *count += 1)
+                            .or_insert(1);
+                    })
+                    .or_insert(indexmap! {doc_id => 1});
+            }
         }
+
+        self.store.token_and_pair_index_map = fst::Map::from_iter(
+          token_and_pairs_map
+              .keys()
+              .zip(0..)
+        ).expect("build fst map from given documents");
+
+        self.store.pairs =
+            token_and_pairs_map
+                .values_mut()
+                .map(|pairs| mem::take(pairs))
+                .collect();
     }
 
     pub fn search(&self, query: &str, max_results: usize) -> Vec<ResultItem<T>> {
         (self.tokenizer)(query)
             .into_iter()
-            .flat_map(|token| self.related_tokens(token))
+            .flat_map(|token| self.related_tokens(&token))
             .flat_map(|(token, data)| self.search_exact(token, data))
             .fold(IndexMap::new(), |mut results, (doc_id, score)| {
                 results
@@ -129,77 +167,67 @@ impl<T> LocalSearch<T> {
             .collect()
     }
 
-    // @TODO: Loop - Optimize as soon as this is resolved - https://github.com/BurntSushi/fst/issues/60
-    // @TODO Return cows?
     pub fn autocomplete(&self, query_token: &str, max_results: usize) -> Vec<String> {
-        let mut results = Vec::new();
-        for token in self.index.keys() {
-            if token.starts_with(&query_token) {
-                results.push(token.clone());
+        let mut token_stream =
+            self
+                .store
+                .token_and_pair_index_map
+                .search(fst::automaton::Str::new(query_token).starts_with())
+                .into_stream();
 
-                if results.len() == max_results {
-                    break
-                }
-            }
+        // Note: fst streams don't support combinators like `take`.
+        // Otherwise the code below can be refactored to `.take(max_results).into_str_keys()
+        let mut tokens = Vec::new();
+        while let Some((token, _)) = token_stream.next() {
+            let token = String::from_utf8(token.to_vec())
+                .expect("cannot convert token to valid UTF-8 String");
+            tokens.push(token);
+            if tokens.len() == max_results { break }
         }
-        results
+        tokens
     }
 
     // ------ private ------
 
-    fn add_document(&mut self, document: T) {
-        let doc_id = self.doc_id_generator.next();
-        let text = (self.text_getter)(&document);
-        let tokens = (self.tokenizer)(text);
-        let token_count = tokens.len();
+    fn related_tokens(&self, query_token: &str) -> IndexMap<Token, RelatedTokenData> {
+        let lev_query = fst::automaton::Levenshtein::new(query_token, self.max_edit_distance)
+            .expect("create Levenshtein automaton");
 
-        self.documents.insert(doc_id, (document, token_count));
+        let mut token_stream =
+            self
+                .store
+                .token_and_pair_index_map
+                .search_with_state(&lev_query)
+                .into_stream();
 
-        for token in tokens {
-            self.add_token(token, doc_id);
-        }
-    }
-
-    fn add_token(&mut self, token: Token, doc_id: DocId) {
-        self.index.map_with_default(token, |doc_id_token_occurrence_count_pairs| {
-            doc_id_token_occurrence_count_pairs
-                .entry(doc_id)
-                .and_modify(|count| *count += 1)
-                .or_insert(1);
-        }, indexmap!{ doc_id => 1 })
-    }
-
-    // @TODO: Loops - Optimize as soon as this is resolved - https://github.com/BurntSushi/fst/issues/60
-    fn related_tokens(&self, query_token: Token) -> IndexMap<Token, RelatedTokenData> {
         let mut related_tokens = IndexMap::new();
+        while let Some((token, _, Some(distance))) = token_stream.next() {
+            let distance = distance as Distance;
 
-        for token in self.index.keys() {
-            let distance = generic_levenshtein::distance(&query_token, token);
-            if distance <= self.max_edit_distance {
-                related_tokens.insert(token.clone(), RelatedTokenData {
-                    distance: Some(distance),
-                    same_prefix: false,
-                });
-            }
+            let token = String::from_utf8(token.to_vec())
+                .expect("cannot convert token to valid UTF-8 String");
 
-            if token.starts_with(&query_token) {
-                related_tokens
-                    .entry(token.clone())
-                    .and_modify(|data| data.same_prefix = true)
-                    .or_insert_with(|| RelatedTokenData {
-                        distance: None,
-                        same_prefix: true
-                    });
+            let same_prefix = token.starts_with(query_token);
+            let valid_distance = distance <= self.max_edit_distance;
+
+            if same_prefix || valid_distance {
+                let related_token_data = RelatedTokenData {
+                    distance: if valid_distance { Some(distance) } else { None },
+                    same_prefix,
+                };
+                related_tokens.insert(token, related_token_data);
             }
         }
         related_tokens
     }
 
     fn search_exact(&self, token: Token, token_data: RelatedTokenData) -> IndexMap<DocId, Score> {
-        self
-            .index
-            .get(&token)
-            .map(|doc_id_token_occurrence_count_pairs| {
+        self.store.token_and_pair_index_map
+            .get(token)
+            .map(|pair_index| {
+                let doc_id_token_occurrence_count_pairs =
+                    self.store.pairs.get(pair_index as usize).expect("get pairs");
+
                 doc_id_token_occurrence_count_pairs
                     .into_iter()
                     .fold(IndexMap::new(), |mut results, (doc_id, token_occurrence_count)| {
@@ -214,7 +242,7 @@ impl<T> LocalSearch<T> {
     }
 
     fn score(&self, tf_idf: f64, token_data: RelatedTokenData) -> Score {
-        let distance_boost = token_data.distance.map(|distance|self.max_edit_distance + 1 - distance).unwrap_or(1) as f64;
+        let distance_boost = token_data.distance.map(|distance| self.max_edit_distance + 1 - distance).unwrap_or(1) as f64;
         let prefix_boost = if token_data.same_prefix {
             PREFIX_BOOST
         } else {

@@ -82,7 +82,9 @@ async fn fetch_records(url: &'static str) -> Result<Msg, Msg> {
 }
 
 fn index(downloaded_records: Vec<Record>) -> LocalSearch<Record> {
-    LocalSearch::with_documents(downloaded_records, |rec| &rec.name)
+    let mut local_search = LocalSearch::new(|rec: &Record| &rec.name);
+    local_search.set_documents(downloaded_records);
+    local_search
 }
 
 fn search(query: &str, local_search: &LocalSearch<Record>, max_results: usize) -> Vec<localsearch::ResultItemOwned<Record>> {
