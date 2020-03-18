@@ -46,7 +46,7 @@ pub fn init(
         title,
         download_url,
         downloaded_records: Vec::new(),
-        local_search: LocalSearch::new(|rec: &Record| &rec.name),
+        local_search: LocalSearch::builder(Vec::new(), |rec: &Record| &rec.name).build(),
         download_start: 0.,
         download_time: None,
         index_time: None,
@@ -82,9 +82,7 @@ async fn fetch_records(url: &'static str) -> Result<Msg, Msg> {
 }
 
 fn index(downloaded_records: Vec<Record>) -> LocalSearch<Record> {
-    let mut local_search = LocalSearch::new(|rec: &Record| &rec.name);
-    local_search.set_documents(downloaded_records);
-    local_search
+    LocalSearch::builder(downloaded_records, |rec| &rec.name).build()
 }
 
 fn search(query: &str, local_search: &LocalSearch<Record>, max_results: usize) -> Vec<localsearch::ResultItemOwned<Record>> {

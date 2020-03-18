@@ -3,19 +3,20 @@ use fst::{self, IntoStreamer, Automaton, Streamer};
 use std::{collections::BTreeMap, mem};
 use seed::log;
 
+pub type Token = String;
+pub type Distance = usize;
 type DocId = usize;
-type Token = String;
 type Score = f64;
 type TokenCount = usize;
 type TokenOccurenceCount = usize;
 type DocIdTokenOccurenceCountPairs = IndexMap<DocId, TokenOccurenceCount>;
-type Distance = usize;
 
 mod levenshtein;
 
-const DEFAULT_EDIT_DISTANCE: usize = 1;
-const EQUAL_DOC_BOOST: f64 = 3.;
-const PREFIX_BOOST: f64 = 1.5;
+// ------ Defaults ------
+
+const DEFAULT_MAX_EDIT_DISTANCE: usize = 1;
+const DEFAULT_PREFIX_BOOST: f64 = 1.5;
 
 pub fn default_tokenizer(text: &str) -> Vec<Token> {
     text
@@ -24,100 +25,53 @@ pub fn default_tokenizer(text: &str) -> Vec<Token> {
         .collect()
 }
 
-pub struct ResultItem<'a, T> {
-    pub document: &'a T,
-    pub score: f64,
+// ------ LocalSearchBuilder ------
+
+pub struct LocalSearchBuilder<T> {
+    documents: Vec<T>,
+    text_extractor: Box<dyn Fn(&T) -> &str>,
+    tokenizer: Option<Box<dyn Fn(&str) -> Vec<Token>>>,
+    max_edit_distance: Option<Distance>,
+    prefix_boost: Option<f64>,
 }
 
-impl<T: Clone> ResultItem<'_, T> {
-    pub fn to_owned_result(&self) -> ResultItemOwned<T> {
-        ResultItemOwned {
-            document: self.document.clone(),
-            score: self.score,
-        }
-    }
-}
-
-pub struct ResultItemOwned<T> {
-    pub document: T,
-    pub score: f64,
-}
-
-#[derive(Default)]
-pub struct Store {
-    token_and_pair_index_map: fst::Map<Vec<u8>>,
-    pairs: Vec<DocIdTokenOccurenceCountPairs>,
-}
-
-// impl Store {
-//     fn new() -> Self {
-//         Self {
-//             tokens_and_pair_indices: Map::default(),
-//             pairs: Vec::default()
-//         }
-//     }
-// }
-
-pub struct LocalSearch<T> {
-    store: Store,
-    documents: IndexMap<DocId, (T, TokenCount)>,
-    text_getter: Box<dyn Fn(&T) -> &str>,
-    tokenizer: Box<dyn Fn(&str) -> Vec<Token>>,
-    doc_id_generator: DocIdGenerator,
-    max_edit_distance: Distance,
-}
-
-#[derive(Default)]
-struct DocIdGenerator(DocId);
-
-impl DocIdGenerator {
-    pub fn next(&mut self) -> DocId {
-        self.0 += 1;
-        self.0
-    }
-}
-
-#[derive(Clone, Copy)]
-struct RelatedTokenData {
-    distance: Option<Distance>,
-    same_prefix: bool,
-}
-
-impl<T> LocalSearch<T> {
-
-    // ------ pub ------
-
-    pub fn new(text_getter: impl (Fn(&T) -> &str) + 'static) -> Self {
+impl<T> LocalSearchBuilder<T> {
+    pub fn new(documents: Vec<T>, text_extractor: impl Fn(&T) -> &str + 'static) -> Self {
         Self {
-            store: Store::default(),
-            documents: IndexMap::new(),
-            text_getter: Box::new(text_getter),
-            tokenizer: Box::new(default_tokenizer),
-            doc_id_generator: DocIdGenerator::default(),
-            max_edit_distance: DEFAULT_EDIT_DISTANCE,
+            documents,
+            text_extractor: Box::new(text_extractor),
+            tokenizer: None,
+            max_edit_distance: None,
+            prefix_boost: None,
         }
     }
 
-    pub fn set_tokenizer(&mut self, tokenizer: impl for <'a> Fn(&'a str) -> Vec<String> + 'static) {
-        self.tokenizer = Box::new(tokenizer);
+    pub fn tokenizer(mut self, tokenizer: impl Fn(&str) -> Vec<Token> + 'static) -> Self {
+        self.tokenizer = Some(Box::new(tokenizer));
+        self
     }
 
-    pub fn set_max_edit_distance(&mut self, distance: Distance) {
-        self.max_edit_distance = distance;
+    pub fn max_edit_distance(mut self, max_edit_distance: Distance) -> Self {
+        self.max_edit_distance = Some(max_edit_distance);
+        self
     }
 
-    pub fn set_documents(&mut self, documents: Vec<T>) {
-        self.documents = IndexMap::with_capacity(documents.len());
-        self.doc_id_generator = DocIdGenerator::default();
+    pub fn prefix_boost(mut self, prefix_boost: f64) -> Self {
+        self.prefix_boost = Some(prefix_boost);
+        self
+    }
+
+    pub fn build(self) -> LocalSearch<T> {
+        let mut documents = IndexMap::<DocId, (T, TokenCount)>::with_capacity(self.documents.len());
+        let tokenizer = self.tokenizer.unwrap_or_else(|| Box::new(default_tokenizer));
 
         let mut token_and_pairs_map = BTreeMap::<Token, DocIdTokenOccurenceCountPairs>::new();
 
-        for document in documents {
-            let doc_id = self.doc_id_generator.next();
-            let text = (self.text_getter)(&document);
-            let tokens = (self.tokenizer)(text);
+        for (doc_id, document) in self.documents.into_iter().enumerate() {
+            let text = (self.text_extractor)(&document);
+            let tokens = tokenizer(text);
             let token_count = tokens.len();
-            self.documents.insert(doc_id, (document, token_count));
+            documents.insert(doc_id, (document, token_count));
 
             for token in tokens {
                 token_and_pairs_map
@@ -132,17 +86,45 @@ impl<T> LocalSearch<T> {
             }
         }
 
-        self.store.token_and_pair_index_map = fst::Map::from_iter(
-            token_and_pairs_map
-                    .keys()
-                    .zip(0..)
-        ).expect("build fst map from given documents");
+        let index = Index {
+            token_and_pair_index_map: fst::Map::from_iter(token_and_pairs_map.keys().zip(0..))
+                .expect("build fst map from given documents"),
+            pairs: token_and_pairs_map.values_mut().map(mem::take).collect()
+        };
 
-        self.store.pairs =
-            token_and_pairs_map
-                .values_mut()
-                .map(|pairs| mem::take(pairs))
-                .collect();
+        LocalSearch {
+            documents,
+            tokenizer,
+            max_edit_distance: self.max_edit_distance.unwrap_or(DEFAULT_MAX_EDIT_DISTANCE),
+            prefix_boost: self.prefix_boost.unwrap_or(DEFAULT_PREFIX_BOOST),
+            index,
+        }
+    }
+}
+
+// ------ Index ------
+
+pub struct Index {
+    token_and_pair_index_map: fst::Map<Vec<u8>>,
+    pairs: Vec<DocIdTokenOccurenceCountPairs>,
+}
+
+// ------ LocalSearch ------
+
+pub struct LocalSearch<T> {
+    documents: IndexMap<DocId, (T, TokenCount)>,
+    tokenizer: Box<dyn Fn(&str) -> Vec<Token>>,
+    max_edit_distance: Distance,
+    prefix_boost: f64,
+    index: Index,
+}
+
+impl<T> LocalSearch<T> {
+
+    // ------ pub ------
+
+    pub fn builder(documents: Vec<T>, text_extractor: impl Fn(&T) -> &str + 'static) -> LocalSearchBuilder<T> {
+        LocalSearchBuilder::new(documents, text_extractor)
     }
 
     pub fn search(&self, query: &str, max_results: usize) -> Vec<ResultItem<T>> {
@@ -153,7 +135,7 @@ impl<T> LocalSearch<T> {
             .fold(IndexMap::new(), |mut results, (doc_id, score)| {
                 results
                     .entry(doc_id)
-                    .and_modify(|merged_score| *merged_score = (*merged_score + score) * EQUAL_DOC_BOOST)
+                    .and_modify(|merged_score| *merged_score = *merged_score + score)
                     .or_insert(score);
                 results
             })
@@ -171,13 +153,11 @@ impl<T> LocalSearch<T> {
     pub fn autocomplete(&self, query_token: &str, max_results: usize) -> Vec<String> {
         let mut token_stream =
             self
-                .store
+                .index
                 .token_and_pair_index_map
                 .search(fst::automaton::Str::new(query_token).starts_with())
                 .into_stream();
 
-        // Note: fst streams don't support combinators like `take`.
-        // Otherwise the code below can be refactored to `.take(max_results).into_str_keys()
         let mut tokens = Vec::new();
         while let Some((token, _)) = token_stream.next() {
             let token = String::from_utf8(token.to_vec())
@@ -203,7 +183,7 @@ impl<T> LocalSearch<T> {
 
         let mut token_stream =
             self
-                .store
+                .index
                 .token_and_pair_index_map
                 .search_with_state(lev_query)
                 .into_stream();
@@ -225,7 +205,7 @@ impl<T> LocalSearch<T> {
     fn add_tokens_with_prefix(&self, query_token: &str, related_tokens: &mut IndexMap<Token, RelatedTokenData>) {
         let mut token_stream =
             self
-                .store
+                .index
                 .token_and_pair_index_map
                 .search(fst::automaton::Str::new(query_token).starts_with())
                 .into_stream();
@@ -245,11 +225,11 @@ impl<T> LocalSearch<T> {
     }
 
     fn search_exact(&self, token: Token, token_data: RelatedTokenData) -> IndexMap<DocId, Score> {
-        self.store.token_and_pair_index_map
+        self.index.token_and_pair_index_map
             .get(&token)
             .map(|pair_index| {
                 let doc_id_token_occurrence_count_pairs =
-                    self.store.pairs.get(pair_index as usize).expect("get pairs");
+                    self.index.pairs.get(pair_index as usize).expect("get pairs");
 
                 doc_id_token_occurrence_count_pairs
                     .into_iter()
@@ -267,7 +247,7 @@ impl<T> LocalSearch<T> {
     fn score(&self, tf_idf: f64, token_data: RelatedTokenData) -> Score {
         let distance_boost = token_data.distance.map(|distance| self.max_edit_distance + 1 - distance).unwrap_or(1) as f64;
         let prefix_boost = if token_data.same_prefix {
-            PREFIX_BOOST
+            self.prefix_boost
         } else {
             1.
         };
@@ -278,7 +258,6 @@ impl<T> LocalSearch<T> {
     fn tf_idf(&self, token_occurrence_count: usize, token_count: usize, num_of_docs_with_token: usize) -> f64 {
         // Term Frequency (TF)
         // tf(t,d) = count of t in d / number of words in d
-//        let tf = token_occurrence_count as f64 / token_count as f64;
         let tf = token_occurrence_count as f64 / token_count as f64;
 
         // Document Frequency (DF)
@@ -294,6 +273,37 @@ impl<T> LocalSearch<T> {
         tf * idf
     }
 }
+
+
+// ------ Results ------
+
+pub struct ResultItem<'a, T> {
+    pub document: &'a T,
+    pub score: f64,
+}
+
+impl<T: Clone> ResultItem<'_, T> {
+    pub fn to_owned_result(&self) -> ResultItemOwned<T> {
+        ResultItemOwned {
+            document: self.document.clone(),
+            score: self.score,
+        }
+    }
+}
+
+
+pub struct ResultItemOwned<T> {
+    pub document: T,
+    pub score: f64,
+}
+
+#[derive(Clone, Copy)]
+struct RelatedTokenData {
+    distance: Option<Distance>,
+    same_prefix: bool,
+}
+
+
 
 #[cfg(test)]
 mod tests {
