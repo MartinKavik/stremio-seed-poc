@@ -1,5 +1,4 @@
 use indexmap::{IndexMap, indexmap};
-use unicode_segmentation::UnicodeSegmentation;
 use fst::{self, IntoStreamer, Automaton, Streamer};
 use std::{collections::BTreeMap, mem};
 use seed::log;
@@ -10,17 +9,17 @@ type Score = f64;
 type TokenCount = usize;
 type TokenOccurenceCount = usize;
 type DocIdTokenOccurenceCountPairs = IndexMap<DocId, TokenOccurenceCount>;
-type Distance = u32;
+type Distance = usize;
 
 mod levenshtein;
 
-const DEFAULT_EDIT_DISTANCE: u32 = 1;
+const DEFAULT_EDIT_DISTANCE: usize = 1;
 const EQUAL_DOC_BOOST: f64 = 3.;
 const PREFIX_BOOST: f64 = 1.5;
 
 pub fn default_tokenizer(text: &str) -> Vec<Token> {
     text
-        .unicode_words()
+        .split_whitespace()
         .map(str::to_lowercase)
         .collect()
 }
@@ -194,6 +193,7 @@ impl<T> LocalSearch<T> {
     fn related_tokens(&self, query_token: &str) -> IndexMap<Token, RelatedTokenData> {
         let mut related_tokens = IndexMap::new();
         self.add_tokens_in_distance(query_token, &mut related_tokens);
+        self.add_tokens_with_prefix(query_token, &mut related_tokens);
         related_tokens
     }
 
@@ -208,45 +208,45 @@ impl<T> LocalSearch<T> {
                 .search_with_state(lev_query)
                 .into_stream();
 
-        // --
-        // let mut st = self.store.token_and_pair_index_map.keys();
-        // while let Some(key) = st.next() {
-        //     let key = String::from_utf8(key.to_vec())
-        //         .expect("cannot convert token to valid UTF-8 String");
-        //     log!(key)
-        // }
-        // --
-
-        while let Some((token, _, Some(distance))) = token_stream.next() {
-            // log!(query_token);
+        while let Some((token, _, Some(levenshtein::AutomatonState { distance, .. }))) = token_stream.next() {
             let token = String::from_utf8(token.to_vec())
                 .expect("cannot convert token to valid UTF-8 String");
 
-            log!(token, distance);
+            related_tokens
+                .entry(token)
+                .and_modify(|related_token_data| related_token_data.distance = distance)
+                .or_insert(RelatedTokenData {
+                    distance,
+                    same_prefix: false,
+                });
+        }
+    }
 
+    fn add_tokens_with_prefix(&self, query_token: &str, related_tokens: &mut IndexMap<Token, RelatedTokenData>) {
+        let mut token_stream =
+            self
+                .store
+                .token_and_pair_index_map
+                .search(fst::automaton::Str::new(query_token).starts_with())
+                .into_stream();
 
-            let distance = distance as Distance;
-            // @TODO: fst's Lev automaton doesn't filter distance (bug?)
-            if distance > self.max_edit_distance { continue }
-
-            // let token = String::from_utf8(token.to_vec())
-            //     .expect("cannot convert token to valid UTF-8 String");
-            //
-            // log!(token, distance);
+        while let Some((token, _)) = token_stream.next() {
+            let token = String::from_utf8(token.to_vec())
+                .expect("cannot convert token to valid UTF-8 String");
 
             related_tokens
                 .entry(token)
-                .and_modify(|related_token_data| related_token_data.distance = Some(distance))
+                .and_modify(|related_token_data| related_token_data.same_prefix = true)
                 .or_insert(RelatedTokenData {
-                    distance: Some(distance),
-                    same_prefix: false,
+                    distance: None,
+                    same_prefix: true,
                 });
         }
     }
 
     fn search_exact(&self, token: Token, token_data: RelatedTokenData) -> IndexMap<DocId, Score> {
         self.store.token_and_pair_index_map
-            .get(token)
+            .get(&token)
             .map(|pair_index| {
                 let doc_id_token_occurrence_count_pairs =
                     self.store.pairs.get(pair_index as usize).expect("get pairs");
