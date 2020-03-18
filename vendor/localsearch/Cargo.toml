@@ -8,5 +8,3 @@ edition = "2018"
 fxhash = "0.2.1"
 fst = { version = "0.4.0" }
 utf8-ranges = "1.0.4"
-# to use log! for debugging
-seed = "0.5.1"

@@ -1,8 +1,6 @@
 use fxhash::{FxHashMap, FxBuildHasher};
 use fst::{self, IntoStreamer, Automaton, Streamer};
-use std::{collections::BTreeMap, mem};
 use std::iter::FromIterator;
-use seed::log;
 
 pub type Token = String;
 pub type Distance = usize;
@@ -10,7 +8,6 @@ type DocId = usize;
 type Score = f64;
 type TokenCount = usize;
 type TokenOccurenceCount = usize;
-type DocIdTokenOccurenceCountPairs = FxHashMap<DocId, TokenOccurenceCount>;
 
 mod levenshtein;
 
@@ -68,7 +65,9 @@ impl<T> LocalSearchBuilder<T> {
         );
         let tokenizer = self.tokenizer.unwrap_or_else(|| Box::new(default_tokenizer));
 
-        let mut token_and_pairs_map = BTreeMap::<Token, DocIdTokenOccurenceCountPairs>::new();
+        let mut token_and_pairs_map = FxHashMap::<Token, FxHashMap<DocId, TokenOccurenceCount>>::with_capacity_and_hasher(
+            self.documents.len(), FxBuildHasher::default()
+        );
 
         for (doc_id, document) in self.documents.into_iter().enumerate() {
             let text = (self.text_extractor)(&document);
@@ -89,10 +88,16 @@ impl<T> LocalSearchBuilder<T> {
             }
         }
 
+        let mut token_and_pairs_vec = token_and_pairs_map.into_iter().collect::<Vec<_>>();
+        token_and_pairs_vec.sort_unstable_by(|(token_a, _), (token_b, _)| {
+            token_a.cmp(token_b)
+        });
+        let (tokens, pairs): (Vec<_>, Vec<_>) = token_and_pairs_vec.into_iter().unzip();
+
         let index = Index {
-            token_and_pair_index_map: fst::Map::from_iter(token_and_pairs_map.keys().zip(0..))
+            token_and_pair_index_map: fst::Map::from_iter(tokens.into_iter().zip(0..))
                 .expect("build fst map from given documents"),
-            pairs: token_and_pairs_map.values_mut().map(mem::take).collect()
+            pairs
         };
 
         LocalSearch {
@@ -109,7 +114,15 @@ impl<T> LocalSearchBuilder<T> {
 
 pub struct Index {
     token_and_pair_index_map: fst::Map<Vec<u8>>,
-    pairs: Vec<DocIdTokenOccurenceCountPairs>,
+    pairs: Vec<FxHashMap<DocId, TokenOccurenceCount>>,
+}
+
+// ------ RelatedTokenData ------
+
+#[derive(Clone, Copy)]
+struct RelatedTokenData {
+    distance: Option<Distance>,
+    same_prefix: bool,
 }
 
 // ------ LocalSearch ------
@@ -301,19 +314,10 @@ impl<T: Clone> ResultItem<'_, T> {
     }
 }
 
-
 pub struct ResultItemOwned<T> {
     pub document: T,
     pub score: f64,
 }
-
-#[derive(Clone, Copy)]
-struct RelatedTokenData {
-    distance: Option<Distance>,
-    same_prefix: bool,
-}
-
-
 
 #[cfg(test)]
 mod tests {
