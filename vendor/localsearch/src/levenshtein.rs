@@ -178,7 +178,7 @@ impl Automaton for Levenshtein {
     fn start(&self) -> Option<AutomatonState> {
         Some(AutomatonState {
             state_idx: 0,
-            distance: None,
+            distance: self.dfa.states[0].distance,
         })
     }
 
