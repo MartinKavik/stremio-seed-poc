@@ -4,8 +4,8 @@ use std::iter::FromIterator;
 
 pub type Token = String;
 pub type Distance = usize;
+pub type Score = f64;
 type DocId = usize;
-type Score = f64;
 type TokenCount = usize;
 type TokenOccurenceCount = usize;
 
@@ -143,7 +143,7 @@ impl<T> LocalSearch<T> {
         LocalSearchBuilder::new(documents, text_extractor)
     }
 
-    pub fn search(&self, query: &str, max_results: usize) -> Vec<ResultItem<T>> {
+    pub fn search(&self, query: &str, max_results: usize) -> Vec<(&T, Score)> {
         let mut doc_ids_and_scores =
             (self.tokenizer)(query)
                 .into_iter()
@@ -164,12 +164,12 @@ impl<T> LocalSearch<T> {
         doc_ids_and_scores.truncate(max_results);
         doc_ids_and_scores
             .into_iter()
-            .map(|(doc_id, score)| {
-                ResultItem {
-                    document: self.documents.get(&doc_id).map(|(doc, _)| doc).expect("get document"),
-                    score,
-                }
-            })
+            .map(|(doc_id, score)|
+                (
+                    self.documents.get(&doc_id).map(|(doc, _)| doc).expect("get document"),
+                    score
+                )
+            )
             .collect()
     }
 
@@ -295,28 +295,6 @@ impl<T> LocalSearch<T> {
         // tf-idf(t, d) = tf(t, d) * log(N/(df + 1))
         tf * idf
     }
-}
-
-
-// ------ Results ------
-
-pub struct ResultItem<'a, T> {
-    pub document: &'a T,
-    pub score: f64,
-}
-
-impl<T: Clone> ResultItem<'_, T> {
-    pub fn to_owned_result(&self) -> ResultItemOwned<T> {
-        ResultItemOwned {
-            document: self.document.clone(),
-            score: self.score,
-        }
-    }
-}
-
-pub struct ResultItemOwned<T> {
-    pub document: T,
-    pub score: f64,
 }
 
 #[cfg(test)]

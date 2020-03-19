@@ -2,7 +2,7 @@ use seed::{prelude::*, *, fetch};
 use std:: str::FromStr;
 use serde::Deserialize;
 use web_sys::Performance;
-use localsearch::{self, LocalSearch};
+use localsearch::{self, LocalSearch, Score};
 
 // ------ ------
 //     Model
@@ -21,7 +21,7 @@ pub struct Model {
     max_autocomplete_results: usize,
     max_results: usize,
     autocomplete_results: Vec<String>,
-    results: Vec<localsearch::ResultItemOwned<Record>>,
+    results: Vec<(Record, Score)>,
     performance: Performance,
 }
 
@@ -85,11 +85,11 @@ fn index(downloaded_records: Vec<Record>) -> LocalSearch<Record> {
     LocalSearch::builder(downloaded_records, |rec| &rec.name).build()
 }
 
-fn search(query: &str, local_search: &LocalSearch<Record>, max_results: usize) -> Vec<localsearch::ResultItemOwned<Record>> {
+fn search(query: &str, local_search: &LocalSearch<Record>, max_results: usize) -> Vec<(Record, Score)> {
     local_search
         .search(query, max_results)
-        .iter()
-        .map(|result| result.to_owned_result())
+        .into_iter()
+        .map(|(record, score)| (record.clone(), score))
         .collect()
 }
 
@@ -324,8 +324,8 @@ pub fn view_results(model: &Model) -> Node<Msg> {
     ]
 }
 
-pub fn view_result(result_item_data: (usize, &localsearch::ResultItemOwned<Record>)) -> Node<Msg> {
-    let (index, result_item) = result_item_data;
+pub fn view_result(result_item_data: (usize, &(Record, Score))) -> Node<Msg> {
+    let (index, (record, score)) = result_item_data;
     tr![
         style!{
             St::BackgroundColor => if index % 2 == 0 { Some("aliceblue") } else { None },
@@ -334,19 +334,19 @@ pub fn view_result(result_item_data: (usize, &localsearch::ResultItemOwned<Recor
             style!{
                 St::Padding => px(10),
             },
-            result_item.document.id,
+            record.id,
         ],
         td![
             style!{
                 St::Padding => px(10),
             },
-            result_item.document.name,
+            record.name,
         ],
         td![
             style!{
                 St::Padding => px(10),
             },
-            result_item.score.to_string(),
+            score.to_string(),
         ],
     ]
 }
