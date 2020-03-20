@@ -11,6 +11,8 @@ type TokenOccurenceCount = usize;
 
 mod levenshtein;
 
+use levenshtein::{Levenshtein, LevenshteinState};
+
 // ------ Defaults ------
 
 const DEFAULT_MAX_EDIT_DISTANCE: usize = 1;
@@ -201,7 +203,7 @@ impl<T> LocalSearch<T> {
     }
 
     fn add_tokens_in_distance(&self, query_token: &str, related_tokens: &mut FxHashMap<Token, RelatedTokenData>) {
-        let lev_query = levenshtein::Levenshtein::new(query_token, self.max_edit_distance)
+        let lev_query = Levenshtein::new(query_token, self.max_edit_distance)
             .expect("create Levenshtein automaton");
 
         let mut token_stream =
@@ -211,7 +213,7 @@ impl<T> LocalSearch<T> {
                 .search_with_state(lev_query)
                 .into_stream();
 
-        while let Some((token, _, Some(levenshtein::AutomatonState { distance, .. }))) = token_stream.next() {
+        while let Some((token, _, Some(LevenshteinState { distance, .. }))) = token_stream.next() {
             let token = String::from_utf8(token.to_vec())
                 .expect("cannot convert token to valid UTF-8 String");
 

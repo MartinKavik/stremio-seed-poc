@@ -49,5 +49,14 @@ features = [
 
 [profile.release]
 lto = true
-opt-level = 'z'
 codegen-units = 1
+# Optimize for size ('s' or 'z')
+#opt-level = 'z'
+# Optimize for speed
+opt-level = 3
+
+[package.metadata.wasm-pack.profile.release]
+# Optimize for size ('s' or 'z')
+#wasm-opt = ['-Os']
+# Optimize for speed
+wasm-opt = ['-O3']
