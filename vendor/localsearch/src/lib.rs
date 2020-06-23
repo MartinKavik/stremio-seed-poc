@@ -16,7 +16,8 @@ use levenshtein::{Levenshtein, LevenshteinState};
 // ------ Defaults ------
 
 const DEFAULT_MAX_EDIT_DISTANCE: usize = 1;
-const DEFAULT_PREFIX_BOOST: f64 = 1.5;
+const DEFAULT_MAX_DISTANCE_BOOST: f64 = 2.;
+const DEFAULT_MAX_PREFIX_BOOST: f64 = 1.5;
 
 pub fn default_tokenizer(text: &str) -> Vec<Token> {
     text
@@ -32,7 +33,8 @@ pub struct LocalSearchBuilder<T> {
     text_extractor: Box<dyn Fn(&T) -> &str>,
     tokenizer: Option<Box<dyn Fn(&str) -> Vec<Token>>>,
     max_edit_distance: Option<Distance>,
-    prefix_boost: Option<f64>,
+    max_distance_boost: Option<f64>,
+    max_prefix_boost: Option<f64>,
 }
 
 impl<T> LocalSearchBuilder<T> {
@@ -42,7 +44,8 @@ impl<T> LocalSearchBuilder<T> {
             text_extractor: Box::new(text_extractor),
             tokenizer: None,
             max_edit_distance: None,
-            prefix_boost: None,
+            max_distance_boost: None,
+            max_prefix_boost: None,
         }
     }
 
@@ -54,13 +57,18 @@ impl<T> LocalSearchBuilder<T> {
     pub fn max_edit_distance(mut self, max_edit_distance: Distance) -> Self {
         self.max_edit_distance = Some(max_edit_distance);
         self
-    }
-
-    pub fn prefix_boost(mut self, prefix_boost: f64) -> Self {
-        self.prefix_boost = Some(prefix_boost);
+    }   
+    
+    pub fn max_distance_boost(mut self, max_distance_boost: f64) -> Self {
+        self.max_distance_boost = Some(max_distance_boost);
         self
     }
 
+    pub fn max_prefix_boost(mut self, max_prefix_boost: f64) -> Self {
+        self.max_prefix_boost = Some(max_prefix_boost);
+        self
+    }    
+    
     pub fn build(self) -> LocalSearch<T> {
         let mut documents = FxHashMap::<DocId, (T, TokenCount)>::with_capacity_and_hasher(
             self.documents.len(), FxBuildHasher::default()
@@ -106,7 +114,8 @@ impl<T> LocalSearchBuilder<T> {
             documents,
             tokenizer,
             max_edit_distance: self.max_edit_distance.unwrap_or(DEFAULT_MAX_EDIT_DISTANCE),
-            prefix_boost: self.prefix_boost.unwrap_or(DEFAULT_PREFIX_BOOST),
+            max_distance_boost: self.max_distance_boost.unwrap_or(DEFAULT_MAX_DISTANCE_BOOST),
+            max_prefix_boost: self.max_prefix_boost.unwrap_or(DEFAULT_MAX_PREFIX_BOOST),
             index,
         }
     }
@@ -124,7 +133,7 @@ pub struct Index {
 #[derive(Clone, Copy)]
 struct RelatedTokenData {
     distance: Option<Distance>,
-    same_prefix: bool,
+    prefix_ratio: Option<f64>,
 }
 
 // ------ LocalSearch ------
@@ -133,7 +142,8 @@ pub struct LocalSearch<T> {
     documents: FxHashMap<DocId, (T, TokenCount)>,
     tokenizer: Box<dyn Fn(&str) -> Vec<Token>>,
     max_edit_distance: Distance,
-    prefix_boost: f64,
+    max_distance_boost: f64,
+    max_prefix_boost: f64,
     index: Index,
 }
 
@@ -222,29 +232,33 @@ impl<T> LocalSearch<T> {
                 .and_modify(|related_token_data| related_token_data.distance = distance)
                 .or_insert(RelatedTokenData {
                     distance,
-                    same_prefix: false,
+                    prefix_ratio: None,
                 });
         }
     }
 
     fn add_tokens_with_prefix(&self, query_token: &str, related_tokens: &mut FxHashMap<Token, RelatedTokenData>) {
+        let query_token_length = query_token.len() as f64;
         let mut token_stream =
             self
                 .index
                 .token_and_pair_index_map
                 .search(fst::automaton::Str::new(query_token).starts_with())
                 .into_stream();
-
+                
         while let Some((token, _)) = token_stream.next() {
             let token = String::from_utf8(token.to_vec())
                 .expect("cannot convert token to valid UTF-8 String");
 
+            let token_length = token.len() as f64;
+            let prefix_ratio = Some(query_token_length / token_length);
+
             related_tokens
                 .entry(token)
-                .and_modify(|related_token_data| related_token_data.same_prefix = true)
+                .and_modify(|related_token_data| related_token_data.prefix_ratio = prefix_ratio)
                 .or_insert(RelatedTokenData {
                     distance: None,
-                    same_prefix: true,
+                    prefix_ratio,
                 });
         }
     }
@@ -270,12 +284,14 @@ impl<T> LocalSearch<T> {
     }
 
     fn score(&self, tf_idf: f64, token_data: RelatedTokenData) -> Score {
-        let distance_boost = token_data.distance.map(|distance| self.max_edit_distance + 1 - distance).unwrap_or(1) as f64;
-        let prefix_boost = if token_data.same_prefix {
-            self.prefix_boost
-        } else {
-            1.
-        };
+        let distance_boost = token_data.distance.map(|distance| {
+            (self.max_edit_distance - distance + 1) as f64 * self.max_distance_boost
+        }).unwrap_or(1.);
+        
+        let prefix_boost = token_data.prefix_ratio.map(|ratio| {
+            (ratio + 1.) * self.max_prefix_boost
+        }).unwrap_or(1.);
+        
         (1. + tf_idf) * distance_boost * prefix_boost
     }
 
