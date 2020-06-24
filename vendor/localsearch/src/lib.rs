@@ -18,6 +18,7 @@ use levenshtein::{Levenshtein, LevenshteinState};
 const DEFAULT_MAX_EDIT_DISTANCE: usize = 1;
 const DEFAULT_MAX_DISTANCE_BOOST: f64 = 2.;
 const DEFAULT_MAX_PREFIX_BOOST: f64 = 1.5;
+const DEFAULT_SCORE_THRESHOLD: f64 = 0.48;
 
 pub fn default_tokenizer(text: &str) -> Vec<Token> {
     text
@@ -35,6 +36,7 @@ pub struct LocalSearchBuilder<T> {
     max_edit_distance: Option<Distance>,
     max_distance_boost: Option<f64>,
     max_prefix_boost: Option<f64>,
+    score_threshold: Option<f64>,
 }
 
 impl<T> LocalSearchBuilder<T> {
@@ -46,6 +48,7 @@ impl<T> LocalSearchBuilder<T> {
             max_edit_distance: None,
             max_distance_boost: None,
             max_prefix_boost: None,
+            score_threshold: None,
         }
     }
 
@@ -68,6 +71,11 @@ impl<T> LocalSearchBuilder<T> {
         self.max_prefix_boost = Some(max_prefix_boost);
         self
     }    
+
+    pub fn score_threshold(mut self, score_threshold: f64) -> Self {
+        self.score_threshold = Some(score_threshold);
+        self
+    }  
     
     pub fn build(self) -> LocalSearch<T> {
         let mut documents = FxHashMap::<DocId, (T, TokenCount)>::with_capacity_and_hasher(
@@ -116,6 +124,7 @@ impl<T> LocalSearchBuilder<T> {
             max_edit_distance: self.max_edit_distance.unwrap_or(DEFAULT_MAX_EDIT_DISTANCE),
             max_distance_boost: self.max_distance_boost.unwrap_or(DEFAULT_MAX_DISTANCE_BOOST),
             max_prefix_boost: self.max_prefix_boost.unwrap_or(DEFAULT_MAX_PREFIX_BOOST),
+            score_threshold: self.score_threshold.unwrap_or(DEFAULT_SCORE_THRESHOLD),
             index,
         }
     }
@@ -144,6 +153,7 @@ pub struct LocalSearch<T> {
     max_edit_distance: Distance,
     max_distance_boost: f64,
     max_prefix_boost: f64,
+    score_threshold: f64,
     index: Index,
 }
 
@@ -174,8 +184,13 @@ impl<T> LocalSearch<T> {
             score_b.partial_cmp(score_a).expect("sort scores")
         });
         doc_ids_and_scores.truncate(max_results);
+
+        let highest_score = doc_ids_and_scores.first().map(|(_, score)| *score).unwrap_or_default();
+        let absolute_score_threshold = highest_score * self.score_threshold;
+
         doc_ids_and_scores
             .into_iter()
+            .filter(|(_, score)| score > &absolute_score_threshold)
             .map(|(doc_id, score)|
                 (
                     self.documents.get(&doc_id).map(|(doc, _)| doc).expect("get document"),
